@@ -32,7 +32,7 @@ textarea {
 }
 
 .app-shell {
-  max-width: 420px;
+  width: min(100%, 1280px);
   margin: 0 auto;
   min-height: 100vh;
   position: relative;
@@ -52,6 +52,10 @@ textarea {
   background: var(--bg);
   width: 100%;
   padding: 16px;
+}
+
+.screen {
+  margin: 0 auto;
 }
 
 .center-content {
@@ -342,7 +346,7 @@ small,
   bottom: 0;
   left: 0;
   right: 0;
-  max-width: 420px;
+  width: min(100%, 1280px);
   margin: 0 auto;
   background: #fff;
   border-top: 1px solid var(--divider);
@@ -1036,5 +1040,99 @@ small,
   .task-card,
   .recommendation-card {
     transition: none;
+  }
+}
+
+@media (min-width: 768px) {
+  .app-shell {
+    padding: 24px 24px 112px;
+  }
+
+  .screen {
+    padding: 24px 20px;
+  }
+
+  .tasks-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+  }
+
+  .gen-step-list,
+  .journal-history-list,
+  .settings-list {
+    max-width: 960px;
+  }
+}
+
+@media (min-width: 980px) {
+  .screen--agenda {
+    padding-bottom: 120px;
+  }
+
+  .agenda-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.9fr);
+    gap: 28px;
+    align-items: start;
+  }
+
+  .agenda-column {
+    min-width: 0;
+  }
+
+  .agenda-column--side {
+    position: sticky;
+    top: 24px;
+  }
+
+  .recommendations-row {
+    display: grid;
+    grid-template-columns: 1fr;
+    overflow: visible;
+    gap: 12px;
+  }
+
+  .recommendation-card {
+    min-height: 118px;
+  }
+
+  .tasks-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .screen--generate,
+  .screen--journal,
+  .screen--profile {
+    max-width: 980px;
+  }
+
+  .tab-bar {
+    left: 50%;
+    right: auto;
+    bottom: 20px;
+    transform: translateX(-50%);
+    width: min(calc(100% - 48px), 820px);
+    border: 1px solid var(--divider);
+    border-radius: 18px;
+    box-shadow: 0 14px 40px rgba(28, 28, 30, 0.08);
+    padding: 10px;
+  }
+
+  .fab {
+    left: auto;
+    right: max(calc((100vw - min(1280px, 100vw)) / 2 + 28px), 28px);
+    bottom: 108px;
+    transform: none;
+    box-shadow: 0 12px 26px rgba(0, 122, 255, 0.24);
+  }
+}
+
+@media (max-width: 767px) {
+  .app-shell {
+    max-width: 420px;
+  }
+
+  .tab-bar {
+    max-width: 420px;
   }
 }

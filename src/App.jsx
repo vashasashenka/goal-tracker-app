@@ -884,7 +884,7 @@ function App() {
       {aiError && <div className="banner-error">{aiError}</div>}
 
       {!showProfile && activeTab === 'agenda' && (
-        <section className="screen">
+        <section className="screen screen--agenda">
           <header className="screen-header">
             <div>
               <h1>{today}</h1>
@@ -895,156 +895,162 @@ function App() {
             </button>
           </header>
 
-          <div className="section-heading-row">
-            <h2>{safeGoals.length > 1 ? 'Текущие цели' : 'Моя основная цель'}</h2>
-            {safeGoals.length > 1 && activeGoal && (
-              <span className="goal-pill" aria-live="polite">
-                {safeGoals.findIndex(g => g.id === activeGoal.id) + 1} / {safeGoals.length}
-              </span>
-            )}
-          </div>
+          <div className="agenda-layout">
+            <div className="agenda-column agenda-column--main">
+              <div className="section-heading-row">
+                <h2>{safeGoals.length > 1 ? 'Текущие цели' : 'Моя основная цель'}</h2>
+                {safeGoals.length > 1 && activeGoal && (
+                  <span className="goal-pill" aria-live="polite">
+                    {safeGoals.findIndex(g => g.id === activeGoal.id) + 1} / {safeGoals.length}
+                  </span>
+                )}
+              </div>
 
-          <div
-            role={safeGoals.length > 1 && activeGoal ? 'region' : undefined}
-            aria-label={safeGoals.length > 1 && activeGoal ? 'Текущая цель, листайте свайпом' : undefined}
-            tabIndex={safeGoals.length > 1 && activeGoal ? 0 : undefined}
-            className={`goal-hero-card ${safeGoals.length > 1 ? 'goal-hero-card--switchable' : ''}`}
-            onKeyDown={
-              safeGoals.length > 1 && activeGoal
-                ? e => {
-                    if (e.key === 'ArrowLeft') {
-                      e.preventDefault()
-                      switchActiveGoal(-1)
-                    } else if (e.key === 'ArrowRight') {
-                      e.preventDefault()
-                      switchActiveGoal(1)
-                    }
-                  }
-                : undefined
-            }
-            onTouchStart={
-              safeGoals.length > 1 && activeGoal
-                ? e => {
-                    goalSwipe.current.x = e.targetTouches[0].clientX
-                  }
-                : undefined
-            }
-            onTouchEnd={
-              safeGoals.length > 1 && activeGoal
-                ? e => {
-                    const start = goalSwipe.current.x
-                    if (start == null) return
-                    const end = e.changedTouches[0].clientX
-                    const dx = end - start
-                    goalSwipe.current.x = null
-                    if (Math.abs(dx) < 48) return
-                    if (dx < 0) switchActiveGoal(1)
-                    else switchActiveGoal(-1)
-                  }
-                : undefined
-            }
-          >
-            {!activeGoal ? (
-              <p className="secondary-text goal-hero-empty">
-                Пока нет целей. Откройте ✨ Генерацию и добавьте первую.
-              </p>
-            ) : (
-              <div className="goal-hero-top">
-                <div className="goal-hero-text-block">
-                  <p className="goal-hero-title">{activeGoal.text}</p>
-                  {safeGoals.length <= 1 && (
-                    <p className="secondary-text goal-hero-hint">
-                      Добавьте вторую цель в ✨ Генерации — появятся стрелки для переключения.
-                    </p>
-                  )}
-                </div>
-                {safeGoals.length > 1 && (
-                  <div className="goal-hero-arrows" role="group" aria-label="Переключение цели">
-                    <button
-                      type="button"
-                      className="goal-arrow"
-                      aria-label="Предыдущая цель"
-                      onClick={() => switchActiveGoal(-1)}
-                    >
-                      ‹
-                    </button>
-                    <button
-                      type="button"
-                      className="goal-arrow"
-                      aria-label="Следующая цель"
-                      onClick={() => switchActiveGoal(1)}
-                    >
-                      ›
-                    </button>
+              <div
+                role={safeGoals.length > 1 && activeGoal ? 'region' : undefined}
+                aria-label={safeGoals.length > 1 && activeGoal ? 'Текущая цель, листайте свайпом' : undefined}
+                tabIndex={safeGoals.length > 1 && activeGoal ? 0 : undefined}
+                className={`goal-hero-card ${safeGoals.length > 1 ? 'goal-hero-card--switchable' : ''}`}
+                onKeyDown={
+                  safeGoals.length > 1 && activeGoal
+                    ? e => {
+                        if (e.key === 'ArrowLeft') {
+                          e.preventDefault()
+                          switchActiveGoal(-1)
+                        } else if (e.key === 'ArrowRight') {
+                          e.preventDefault()
+                          switchActiveGoal(1)
+                        }
+                      }
+                    : undefined
+                }
+                onTouchStart={
+                  safeGoals.length > 1 && activeGoal
+                    ? e => {
+                        goalSwipe.current.x = e.targetTouches[0].clientX
+                      }
+                    : undefined
+                }
+                onTouchEnd={
+                  safeGoals.length > 1 && activeGoal
+                    ? e => {
+                        const start = goalSwipe.current.x
+                        if (start == null) return
+                        const end = e.changedTouches[0].clientX
+                        const dx = end - start
+                        goalSwipe.current.x = null
+                        if (Math.abs(dx) < 48) return
+                        if (dx < 0) switchActiveGoal(1)
+                        else switchActiveGoal(-1)
+                      }
+                    : undefined
+                }
+              >
+                {!activeGoal ? (
+                  <p className="secondary-text goal-hero-empty">
+                    Пока нет целей. Откройте ✨ Генерацию и добавьте первую.
+                  </p>
+                ) : (
+                  <div className="goal-hero-top">
+                    <div className="goal-hero-text-block">
+                      <p className="goal-hero-title">{activeGoal.text}</p>
+                      {safeGoals.length <= 1 && (
+                        <p className="secondary-text goal-hero-hint">
+                          Добавьте вторую цель в ✨ Генерации — появятся стрелки для переключения.
+                        </p>
+                      )}
+                    </div>
+                    {safeGoals.length > 1 && (
+                      <div className="goal-hero-arrows" role="group" aria-label="Переключение цели">
+                        <button
+                          type="button"
+                          className="goal-arrow"
+                          aria-label="Предыдущая цель"
+                          onClick={() => switchActiveGoal(-1)}
+                        >
+                          ‹
+                        </button>
+                        <button
+                          type="button"
+                          className="goal-arrow"
+                          aria-label="Следующая цель"
+                          onClick={() => switchActiveGoal(1)}
+                        >
+                          ›
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
-            )}
-          </div>
 
-          <h2 className="section-h2-tight">Рекомендации ассистента</h2>
-          {activeGoal && (
-            <p className="secondary-text section-subline">под цель «{activeGoal.text}»</p>
-          )}
-          <div className="recommendations-row">
-            {recommendations.length === 0 ? (
-              <p className="secondary-text">
-                {!activeGoal
-                  ? 'Добавьте цель — здесь появятся идеи ИИ именно для неё'
-                  : 'Пока нет рекомендаций ИИ для этой цели. Смените цель — подгрузим идеи для другой'}
-              </p>
-            ) : (
-              recommendations.map((item, index) =>
-                item.placeholder ? (
-                  <article
-                    key={item.id}
-                    className="recommendation-card recommendation-card--placeholder micro-appear-instant"
-                  >
-                    <div className="rec-placeholder-shine" aria-hidden />
-                  </article>
-                ) : (
-                  <article
-                    key={item.id}
-                    className={`recommendation-card ${item.instantEnter ? 'micro-appear-instant' : 'micro-appear'}`}
-                    style={item.instantEnter ? undefined : { '--appear-i': index }}
-                  >
-                    <div>{item.icon}</div>
-                    <p>{item.text}</p>
-                    <button type="button" onClick={() => addRecommendationToActiveGoal(item)}>
-                      ➕
+              <h2 className="section-h2-tight">Микрошаги</h2>
+              {activeGoal && (
+                <p className="secondary-text section-subline">под цель «{activeGoal.text}»</p>
+              )}
+              {!activeGoal || agendaMicroTasks.length === 0 ? (
+                <p className="secondary-text">
+                  {activeGoal
+                    ? 'Нет микрошагов для этой цели. Нажмите [+] чтобы добавить или сгенерировать'
+                    : 'Выберите цель выше — здесь появятся её шаги'}
+                </p>
+              ) : (
+                <div className="tasks-grid">
+                  {agendaMicroTasks.map((task, index) => (
+                    <button
+                      key={task.id}
+                      type="button"
+                      className="task-card micro-appear"
+                      style={{ '--appear-i': index }}
+                      onClick={() => completeMicroGoal(activeGoal.id, task.id)}
+                    >
+                      <span>☐</span>
+                      <strong>{task.text}</strong>
                     </button>
-                  </article>
-                )
-              )
-            )}
-          </div>
-
-          <h2 className="section-h2-tight">Микрошаги</h2>
-          {activeGoal && (
-            <p className="secondary-text section-subline">под цель «{activeGoal.text}»</p>
-          )}
-          {!activeGoal || agendaMicroTasks.length === 0 ? (
-            <p className="secondary-text">
-              {activeGoal
-                ? 'Нет микрошагов для этой цели. Нажмите [+] чтобы добавить или сгенерировать'
-                : 'Выберите цель выше — здесь появятся её шаги'}
-            </p>
-          ) : (
-            <div className="tasks-grid">
-              {agendaMicroTasks.map((task, index) => (
-                <button
-                  key={task.id}
-                  type="button"
-                  className="task-card micro-appear"
-                  style={{ '--appear-i': index }}
-                  onClick={() => completeMicroGoal(activeGoal.id, task.id)}
-                >
-                  <span>☐</span>
-                  <strong>{task.text}</strong>
-                </button>
-              ))}
+                  ))}
+                </div>
+              )}
             </div>
-          )}
+
+            <aside className="agenda-column agenda-column--side">
+              <h2 className="section-h2-tight">Рекомендации ассистента</h2>
+              {activeGoal && (
+                <p className="secondary-text section-subline">под цель «{activeGoal.text}»</p>
+              )}
+              <div className="recommendations-row">
+                {recommendations.length === 0 ? (
+                  <p className="secondary-text">
+                    {!activeGoal
+                      ? 'Добавьте цель — здесь появятся идеи ИИ именно для неё'
+                      : 'Пока нет рекомендаций ИИ для этой цели. Смените цель — подгрузим идеи для другой'}
+                  </p>
+                ) : (
+                  recommendations.map((item, index) =>
+                    item.placeholder ? (
+                      <article
+                        key={item.id}
+                        className="recommendation-card recommendation-card--placeholder micro-appear-instant"
+                      >
+                        <div className="rec-placeholder-shine" aria-hidden />
+                      </article>
+                    ) : (
+                      <article
+                        key={item.id}
+                        className={`recommendation-card ${item.instantEnter ? 'micro-appear-instant' : 'micro-appear'}`}
+                        style={item.instantEnter ? undefined : { '--appear-i': index }}
+                      >
+                        <div>{item.icon}</div>
+                        <p>{item.text}</p>
+                        <button type="button" onClick={() => addRecommendationToActiveGoal(item)}>
+                          ➕
+                        </button>
+                      </article>
+                    )
+                  )
+                )}
+              </div>
+            </aside>
+          </div>
 
           <button className="fab" onClick={() => setActiveTab('generate')}>
             +
@@ -1053,7 +1059,7 @@ function App() {
       )}
 
       {!showProfile && activeTab === 'generate' && (
-        <section className="screen">
+        <section className="screen screen--generate">
           <header className="screen-header">
             <button className="text-button" onClick={() => setActiveTab('agenda')}>
               ← Назад
@@ -1184,7 +1190,7 @@ function App() {
       )}
 
       {!showProfile && activeTab === 'journal' && (
-        <section className="screen journal-screen">
+        <section className="screen screen--journal journal-screen">
           <header className="screen-header">
             <div>
               <h1>Статистика</h1>
@@ -1277,7 +1283,7 @@ function App() {
       )}
 
       {showProfile && (
-        <section className="screen">
+        <section className="screen screen--profile">
           <header className="screen-header">
             <button className="text-button" onClick={() => setShowProfile(false)}>
               ← Повестка
