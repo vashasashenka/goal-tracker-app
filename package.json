@@ -11,6 +11,10 @@
   },
   "dependencies": {
     "chart.js": "^4.5.1",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.1",
+    "express": "^5.1.0",
+    "openai": "^6.33.0",
     "pg": "^8.20.0",
     "react": "^19.2.0",
     "react-chartjs-2": "^5.3.1",

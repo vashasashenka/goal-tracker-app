@@ -46,7 +46,13 @@ async function parseApiErrorMessage(response) {
     const body = await response.json()
     if (typeof body?.error === 'string' && body.error.trim()) return body.error.trim()
   } catch {
-    /* ignore */
+    try {
+      const text = await response.text()
+      const cleaned = String(text || '').trim()
+      if (cleaned) return cleaned.slice(0, 200)
+    } catch {
+      /* ignore */
+    }
   }
   return null
 }
@@ -194,6 +200,16 @@ function App() {
           fetch(`${API_URL}/api/goals`),
           fetch(`${API_URL}/api/completed-goals`),
         ])
+
+        if (!goalsResponse.ok) {
+          const msg = await parseApiErrorMessage(goalsResponse)
+          throw new Error(msg || `goals ${goalsResponse.status}`)
+        }
+
+        if (!completedResponse.ok) {
+          const msg = await parseApiErrorMessage(completedResponse)
+          throw new Error(msg || `completed-goals ${completedResponse.status}`)
+        }
 
         const goalsData = await goalsResponse.json()
         const completedData = await completedResponse.json()
