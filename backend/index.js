@@ -10,6 +10,10 @@ const { Pool } = pg
 
 const app = express()
 const PORT = Number(process.env.PORT) || 5001
+const dbHost = String(process.env.DB_HOST || '').trim()
+const useDbSsl =
+  /^(1|true|required)$/i.test(String(process.env.DB_SSL || '').trim()) ||
+  (dbHost && dbHost !== 'localhost' && dbHost !== '127.0.0.1')
 
 const corsOrigin = process.env.CORS_ORIGIN
   ? process.env.CORS_ORIGIN.split(',').map(item => item.trim())
@@ -20,10 +24,11 @@ app.use(express.json())
 
 const pool = new Pool({
   user: process.env.DB_USER,
-  host: process.env.DB_HOST,
+  host: dbHost,
   database: process.env.DB_NAME,
   password: process.env.DB_PASSWORD || undefined,
   port: Number(process.env.DB_PORT),
+  ssl: useDbSsl ? { rejectUnauthorized: false } : undefined,
 })
 
 const yandex = new OpenAI({
