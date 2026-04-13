@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 function normalizeApiBase(url) {
   const s = String(url ?? '').trim()
-  if (!s) return 'http://localhost:5001'
+  if (!s || s === '/') return ''
+  if (s.startsWith('/')) return s.replace(/\/$/, '')
   if (s.startsWith('://')) return `http${s}`
   if (!/^https?:\/\//i.test(s)) return `http://${s.replace(/^\/+/, '')}`
   return s.replace(/\/$/, '')
