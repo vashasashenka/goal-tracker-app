@@ -11,36 +11,6 @@ function normalizeApiBase(url) {
 
 const API_URL = normalizeApiBase(import.meta.env.VITE_API_URL)
 
-/** Сначала DELETE /api/goals; если бэкенд без этого маршрута (404/405) — удаляем по одной через /api/goals/:id */
-async function deleteAllGoals() {
-  const bulk = await fetch(`${API_URL}/api/goals`, { method: 'DELETE' })
-  if (bulk.ok) return
-
-  if (bulk.status !== 404 && bulk.status !== 405) {
-    const msg = await parseApiErrorMessage(bulk)
-    throw new Error(msg || `goals ${bulk.status}`)
-  }
-
-  const listRes = await fetch(`${API_URL}/api/goals`)
-  if (!listRes.ok) {
-    const msg = await parseApiErrorMessage(listRes)
-    throw new Error(msg || `goals list ${listRes.status}`)
-  }
-  const list = await listRes.json()
-  if (!Array.isArray(list) || list.length === 0) return
-
-  const results = await Promise.all(
-    list.map(g =>
-      fetch(`${API_URL}/api/goals/${encodeURIComponent(g.id)}`, { method: 'DELETE' })
-    )
-  )
-  const bad = results.find(r => !r.ok)
-  if (bad) {
-    const msg = await parseApiErrorMessage(bad)
-    throw new Error(msg || `goal delete ${bad.status}`)
-  }
-}
-
 async function parseApiErrorMessage(response) {
   try {
     const body = await response.json()
@@ -58,11 +28,46 @@ async function parseApiErrorMessage(response) {
 }
 
 const ACTIVE_GOAL_KEY = 'goal_tracker_active_goal_id'
+const GOALS_KEY = 'goal_tracker_goals'
+const COMPLETED_GOALS_KEY = 'goal_tracker_completed_goals'
+const PROFILE_ID_KEY = 'goal_tracker_profile_id'
 const USER_NAME_KEY = 'goal_tracker_user_name'
 const SETTINGS_KEY = 'goal_tracker_settings'
 
 /** Сколько подсказок ИИ держим на экране (после добавления одной — дозаполняем до этого числа). */
 const AI_SUGGEST_SLOTS = 3
+
+function makeScopedStorageKey(base, userKey) {
+  return `${base}::${userKey || 'guest'}`
+}
+
+function generateProfileId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `profile-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`
+}
+
+function ensureProfileId() {
+  const saved = String(localStorage.getItem(PROFILE_ID_KEY) || '').trim()
+  if (saved) return saved
+  const created = generateProfileId()
+  localStorage.setItem(PROFILE_ID_KEY, created)
+  return created
+}
+
+function readScopedGoalList(baseKey, userKey) {
+  const raw = localStorage.getItem(makeScopedStorageKey(baseKey, userKey))
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed)
+      ? parsed.map(normalizeGoal).filter(item => item && Number.isFinite(Number(item.id)))
+      : []
+  } catch {
+    return []
+  }
+}
 
 async function fetchPreviewMicrogoals(text, existingTexts, count = AI_SUGGEST_SLOTS) {
   const response = await fetch(`${API_URL}/api/preview-microgoals`, {
@@ -114,10 +119,14 @@ function textSimilarity(a, b) {
 }
 
 function App() {
-  const [goals, setGoals] = useState([])
-  const [completedGoals, setCompletedGoals] = useState([])
+  const initialUserName = String(localStorage.getItem(USER_NAME_KEY) || '').trim()
+  const initialProfileId = ensureProfileId()
+  const [goals, setGoals] = useState(() => readScopedGoalList(GOALS_KEY, initialProfileId))
+  const [completedGoals, setCompletedGoals] = useState(() =>
+    readScopedGoalList(COMPLETED_GOALS_KEY, initialProfileId)
+  )
   const [activeGoalId, setActiveGoalId] = useState(() => {
-    const raw = localStorage.getItem(ACTIVE_GOAL_KEY)
+    const raw = localStorage.getItem(makeScopedStorageKey(ACTIVE_GOAL_KEY, initialProfileId))
     if (!raw || raw === 'undefined' || raw === 'null') return null
     const n = Number(raw)
     return Number.isFinite(n) ? n : null
@@ -131,13 +140,11 @@ function App() {
   /** Текст цели/задачи, по которому запрошены рекомендации (в т.ч. из поля Генерации без созданной цели). */
   const [recommendationsSource, setRecommendationsSource] = useState('')
 
-  const [userName, setUserName] = useState(() =>
-    String(localStorage.getItem(USER_NAME_KEY) || '').trim()
-  )
+  const [userName, setUserName] = useState(() => initialUserName)
   /** Черновик в поле имени; не смешиваем с сохранённым именем — иначе после одной буквы экран онбординга закрывается. */
   const [nameDraft, setNameDraft] = useState('')
   const [settings, setSettings] = useState(() => {
-    const saved = localStorage.getItem(SETTINGS_KEY)
+    const saved = localStorage.getItem(makeScopedStorageKey(SETTINGS_KEY, initialProfileId))
     if (!saved) {
       return {
         calendarAccess: true,
@@ -167,6 +174,19 @@ function App() {
   const [genCustomInput, setGenCustomInput] = useState('')
   const [genRowBusyId, setGenRowBusyId] = useState(null)
   const [isAddingOwnStep, setIsAddingOwnStep] = useState(false)
+  const [taskEditor, setTaskEditor] = useState(null)
+  const [taskDraft, setTaskDraft] = useState('')
+  const [taskEditorBusy, setTaskEditorBusy] = useState(false)
+  const [expandedHistoryId, setExpandedHistoryId] = useState(null)
+
+  const userKey = initialProfileId
+  const activeGoalStorageKey = useMemo(() => makeScopedStorageKey(ACTIVE_GOAL_KEY, userKey), [userKey])
+  const goalsStorageKey = useMemo(() => makeScopedStorageKey(GOALS_KEY, userKey), [userKey])
+  const completedGoalsStorageKey = useMemo(
+    () => makeScopedStorageKey(COMPLETED_GOALS_KEY, userKey),
+    [userKey]
+  )
+  const settingsStorageKey = useMemo(() => makeScopedStorageKey(SETTINGS_KEY, userKey), [userKey])
 
   function resetGenerationUi() {
     setGenerationInput('')
@@ -179,8 +199,33 @@ function App() {
   }
 
   useEffect(() => {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings))
-  }, [settings])
+    localStorage.setItem(settingsStorageKey, JSON.stringify(settings))
+  }, [settings, settingsStorageKey])
+
+  useEffect(() => {
+    const saved = localStorage.getItem(settingsStorageKey)
+    if (!saved) {
+      setSettings({
+        calendarAccess: true,
+        geoAccess: false,
+        analytics: true,
+        notifications: true,
+        mode: 'Стандарт',
+      })
+      return
+    }
+    try {
+      setSettings(JSON.parse(saved))
+    } catch {
+      setSettings({
+        calendarAccess: true,
+        geoAccess: false,
+        analytics: true,
+        notifications: true,
+        mode: 'Стандарт',
+      })
+    }
+  }, [settingsStorageKey])
 
   useEffect(() => {
     const goOnline = () => setIsOnline(true)
@@ -194,48 +239,22 @@ function App() {
   }, [])
 
   useEffect(() => {
-    async function fetchData() {
-      try {
-        const [goalsResponse, completedResponse] = await Promise.all([
-          fetch(`${API_URL}/api/goals`),
-          fetch(`${API_URL}/api/completed-goals`),
-        ])
+    setGoals(readScopedGoalList(GOALS_KEY, userKey))
+    setCompletedGoals(readScopedGoalList(COMPLETED_GOALS_KEY, userKey))
+  }, [userKey])
 
-        if (!goalsResponse.ok) {
-          const msg = await parseApiErrorMessage(goalsResponse)
-          throw new Error(msg || `goals ${goalsResponse.status}`)
-        }
+  useEffect(() => {
+    localStorage.setItem(goalsStorageKey, JSON.stringify(goals))
+  }, [goals, goalsStorageKey])
 
-        if (!completedResponse.ok) {
-          const msg = await parseApiErrorMessage(completedResponse)
-          throw new Error(msg || `completed-goals ${completedResponse.status}`)
-        }
-
-        const goalsData = await goalsResponse.json()
-        const completedData = await completedResponse.json()
-        setGoals(
-          Array.isArray(goalsData)
-            ? goalsData.map(normalizeGoal).filter(g => g && Number.isFinite(Number(g.id)))
-            : []
-        )
-        setCompletedGoals(
-          Array.isArray(completedData)
-            ? completedData.map(normalizeGoal).filter(g => g && Number.isFinite(Number(g.id)))
-            : []
-        )
-      } catch (error) {
-        console.error('Ошибка загрузки данных:', error)
-        setGoals([])
-        setCompletedGoals([])
-      }
-    }
-    fetchData()
-  }, [])
+  useEffect(() => {
+    localStorage.setItem(completedGoalsStorageKey, JSON.stringify(completedGoals))
+  }, [completedGoals, completedGoalsStorageKey])
 
   useEffect(() => {
     if (!Array.isArray(goals) || goals.length === 0) {
       setActiveGoalId(null)
-      localStorage.removeItem(ACTIVE_GOAL_KEY)
+      localStorage.removeItem(activeGoalStorageKey)
       return
     }
 
@@ -243,9 +262,9 @@ function App() {
     const exists = idOk && goals.some(g => g.id === activeGoalId)
     if (!idOk || !exists) {
       setActiveGoalId(goals[0].id)
-      localStorage.setItem(ACTIVE_GOAL_KEY, String(goals[0].id))
+      localStorage.setItem(activeGoalStorageKey, String(goals[0].id))
     }
-  }, [goals, activeGoalId])
+  }, [goals, activeGoalId, activeGoalStorageKey])
 
   const safeGoals = Array.isArray(goals) ? goals : []
   const safeCompletedGoals = Array.isArray(completedGoals) ? completedGoals : []
@@ -272,7 +291,7 @@ function App() {
     const nextIdx = (idx + delta + len) % len
     const nextGoal = safeGoals[nextIdx]
     setActiveGoalId(nextGoal.id)
-    localStorage.setItem(ACTIVE_GOAL_KEY, String(nextGoal.id))
+    localStorage.setItem(activeGoalStorageKey, String(nextGoal.id))
     setRecommendations([])
   }
 
@@ -404,6 +423,7 @@ function App() {
         return {
           id: goal.id,
           text: goal.text,
+          microGoals: Array.isArray(goal.microGoals) ? goal.microGoals : [],
           when,
           dateStr: when.toLocaleDateString('ru-RU', {
             day: 'numeric',
@@ -419,47 +439,48 @@ function App() {
       })
   }, [safeCompletedGoals])
 
-  async function updateGoalOnServer(updatedGoal) {
+  function openTaskEditor(goalId, task = null) {
+    setTaskEditor({
+      goalId,
+      taskId: task?.id ?? null,
+      mode: task ? 'edit' : 'create',
+    })
+    setTaskDraft(String(task?.text || ''))
+    setAiError('')
+  }
+
+  function closeTaskEditor() {
+    setTaskEditor(null)
+    setTaskDraft('')
+    setTaskEditorBusy(false)
+  }
+
+  const editingTask = useMemo(() => {
+    if (!taskEditor) return null
+    const goal = safeGoals.find(item => item.id === taskEditor.goalId)
+    if (!goal) return null
+    return (goal.microGoals || []).find(item => item.id === taskEditor.taskId) || null
+  }, [taskEditor, safeGoals])
+
+  async function updateGoalLocally(updatedGoal) {
     const gid = updatedGoal?.id
     if (gid == null || !Number.isFinite(Number(gid))) {
       console.error('Обновление цели: нет корректного id', updatedGoal)
       return updatedGoal
     }
-    try {
-      const response = await fetch(`${API_URL}/api/goals/${gid}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updatedGoal),
-      })
-      return await response.json()
-    } catch (error) {
-      console.error('Ошибка обновления цели:', error)
-      return updatedGoal
-    }
+    return normalizeGoal(updatedGoal)
   }
 
   async function createGoal(text) {
-    try {
-      const response = await fetch(`${API_URL}/api/goals`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
-      })
-      if (!response.ok) {
-        const msg = await parseApiErrorMessage(response)
-        console.error('Ошибка создания цели:', msg || response.status)
-        return null
-      }
-      const goal = await response.json()
-      const normalized = normalizeGoal(goal)
-      setGoals(prev => [normalized, ...prev])
-      setActiveGoalId(normalized.id)
-      localStorage.setItem(ACTIVE_GOAL_KEY, String(normalized.id))
-      return normalized
-    } catch (error) {
-      console.error('Ошибка создания цели:', error)
-      return null
-    }
+    const normalized = normalizeGoal({
+      id: Date.now(),
+      text,
+      microGoals: [],
+    })
+    setGoals(prev => [normalized, ...prev])
+    setActiveGoalId(normalized.id)
+    localStorage.setItem(activeGoalStorageKey, String(normalized.id))
+    return normalized
   }
 
   async function completeMicroGoal(goalId, microId) {
@@ -477,22 +498,12 @@ function App() {
 
     if (allDone) {
       const finishedGoal = { ...updatedGoal, finishedAt: new Date().toISOString() }
-      try {
-        await fetch(`${API_URL}/api/completed-goals`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(finishedGoal),
-        })
-        await fetch(`${API_URL}/api/goals/${goalId}`, { method: 'DELETE' })
-        setGoals(prev => prev.filter(item => item.id !== goalId))
-        setCompletedGoals(prev => [finishedGoal, ...prev])
-      } catch (error) {
-        console.error('Ошибка завершения цели:', error)
-      }
+      setGoals(prev => prev.filter(item => item.id !== goalId))
+      setCompletedGoals(prev => [finishedGoal, ...prev])
       return
     }
 
-    const saved = await updateGoalOnServer(updatedGoal)
+    const saved = await updateGoalLocally(updatedGoal)
     setGoals(prev => prev.map(item => (item.id === saved.id ? saved : item)))
   }
 
@@ -574,7 +585,7 @@ function App() {
         if (existing) {
           goal = normalizeGoal(existing)
           setActiveGoalId(existing.id)
-          localStorage.setItem(ACTIVE_GOAL_KEY, String(existing.id))
+          localStorage.setItem(activeGoalStorageKey, String(existing.id))
         } else {
           const created = await createGoal(title)
           if (!created) return
@@ -595,7 +606,7 @@ function App() {
           },
         ],
       }
-      const saved = await updateGoalOnServer(updatedGoal)
+      const saved = await updateGoalLocally(updatedGoal)
       setGoals(prev => prev.map(g => (g.id === saved.id ? saved : g)))
       await refillRecommendationSlotInPlace(item.id, saved)
     } catch (error) {
@@ -668,11 +679,11 @@ function App() {
             suggested: false,
           },
         ]
-        const updated = await updateGoalOnServer({ ...baseGoal, microGoals })
+        const updated = await updateGoalLocally({ ...baseGoal, microGoals })
         const savedGoal = normalizeGoal(updated)
         setGoals(prev => prev.map(g => (g.id === savedGoal.id ? savedGoal : g)))
         setActiveGoalId(savedGoal.id)
-        localStorage.setItem(ACTIVE_GOAL_KEY, String(savedGoal.id))
+        localStorage.setItem(activeGoalStorageKey, String(savedGoal.id))
       } else {
         const created = await createGoal(goalTitle)
         if (!created) return
@@ -684,7 +695,7 @@ function App() {
             suggested: false,
           },
         ]
-        const updated = await updateGoalOnServer({
+        const updated = await updateGoalLocally({
           ...created,
           text: goalTitle,
           microGoals,
@@ -743,11 +754,11 @@ function App() {
             suggested: true,
           },
         ]
-        const updated = await updateGoalOnServer({ ...savedGoal, microGoals })
+        const updated = await updateGoalLocally({ ...savedGoal, microGoals })
         savedGoal = normalizeGoal(updated)
         setGoals(prev => prev.map(g => (g.id === savedGoal.id ? savedGoal : g)))
         setActiveGoalId(savedGoal.id)
-        localStorage.setItem(ACTIVE_GOAL_KEY, String(savedGoal.id))
+        localStorage.setItem(activeGoalStorageKey, String(savedGoal.id))
       } else if (!savedGoal) {
         const created = await createGoal(goalTitle)
         if (!created) return
@@ -759,7 +770,7 @@ function App() {
             suggested: true,
           },
         ]
-        const updated = await updateGoalOnServer({
+        const updated = await updateGoalLocally({
           ...created,
           text: goalTitle,
           microGoals,
@@ -805,6 +816,68 @@ function App() {
     }
   }
 
+  async function saveTaskEditor() {
+    if (!taskEditor || taskEditorBusy) return
+    const text = String(taskDraft || '').trim()
+    if (!text) return
+
+    const goal = safeGoals.find(item => item.id === taskEditor.goalId)
+    if (!goal) return
+
+    const duplicate = (goal.microGoals || []).some(
+      item => item.id !== taskEditor.taskId && textSimilarity(item.text, text) >= 0.65
+    )
+    if (duplicate) {
+      setAiError('Похожий микрошаг уже есть в этой цели')
+      return
+    }
+
+    setTaskEditorBusy(true)
+    try {
+      const microGoals =
+        taskEditor.mode === 'create'
+          ? [
+              ...(goal.microGoals || []),
+              {
+                id: Date.now() + Math.floor(Math.random() * 1000),
+                text,
+                completed: false,
+                suggested: false,
+              },
+            ]
+          : (goal.microGoals || []).map(item =>
+              item.id === taskEditor.taskId ? { ...item, text } : item
+            )
+
+      const saved = normalizeGoal(await updateGoalLocally({ ...goal, microGoals }))
+      setGoals(prev => prev.map(item => (item.id === saved.id ? saved : item)))
+      closeTaskEditor()
+    } catch (error) {
+      console.error('Сохранение микрошагa:', error)
+      setAiError('Не удалось сохранить микрошаг')
+    } finally {
+      setTaskEditorBusy(false)
+    }
+  }
+
+  async function deleteTaskFromGoal(goalId, taskId) {
+    const goal = safeGoals.find(item => item.id === goalId)
+    if (!goal || taskEditorBusy) return
+
+    setTaskEditorBusy(true)
+    try {
+      const microGoals = (goal.microGoals || []).filter(item => item.id !== taskId)
+      const saved = normalizeGoal(await updateGoalLocally({ ...goal, microGoals }))
+      setGoals(prev => prev.map(item => (item.id === saved.id ? saved : item)))
+      closeTaskEditor()
+    } catch (error) {
+      console.error('Удаление микрошагa:', error)
+      setAiError('Не удалось удалить микрошаг')
+    } finally {
+      setTaskEditorBusy(false)
+    }
+  }
+
   async function clearCompletedHistory() {
     const confirmed = window.confirm(
       'Удалить всю историю завершённых целей и все активные цели с микрошагами? Это действие нельзя отменить.'
@@ -812,15 +885,10 @@ function App() {
     if (!confirmed) return
 
     try {
-      const histRes = await fetch(`${API_URL}/api/completed-goals`, { method: 'DELETE' })
-      if (!histRes.ok) {
-        throw new Error('hist')
-      }
-      await deleteAllGoals()
       setCompletedGoals([])
       setGoals([])
       setActiveGoalId(null)
-      localStorage.removeItem(ACTIVE_GOAL_KEY)
+      localStorage.removeItem(activeGoalStorageKey)
       setRecommendations([])
       setRecommendationsSource('')
       resetGenerationUi()
@@ -988,6 +1056,15 @@ function App() {
               {activeGoal && (
                 <p className="secondary-text section-subline">под цель «{activeGoal.text}»</p>
               )}
+              {activeGoal && (
+                <button
+                  type="button"
+                  className="text-button section-inline-action"
+                  onClick={() => openTaskEditor(activeGoal.id)}
+                >
+                  + Добавить свой микрошаг
+                </button>
+              )}
               {!activeGoal || agendaMicroTasks.length === 0 ? (
                 <p className="secondary-text">
                   {activeGoal
@@ -1002,7 +1079,7 @@ function App() {
                       type="button"
                       className="task-card micro-appear"
                       style={{ '--appear-i': index }}
-                      onClick={() => completeMicroGoal(activeGoal.id, task.id)}
+                      onClick={() => openTaskEditor(activeGoal.id, task)}
                     >
                       <span>☐</span>
                       <strong>{task.text}</strong>
@@ -1049,6 +1126,15 @@ function App() {
                   )
                 )}
               </div>
+              {activeGoal && (
+                <button
+                  type="button"
+                  className="secondary-button side-action-button"
+                  onClick={() => openTaskEditor(activeGoal.id)}
+                >
+                  Добавить шаг вручную
+                </button>
+              )}
             </aside>
           </div>
 
@@ -1259,7 +1345,12 @@ function App() {
           ) : (
             <div className="journal-history-list">
               {historyItems.map(item => (
-                <div key={item.id} className="history-row history-row--rich">
+                <button
+                  key={item.id}
+                  type="button"
+                  className={`history-row history-row--rich ${expandedHistoryId === item.id ? 'history-row--expanded' : ''}`}
+                  onClick={() => setExpandedHistoryId(prev => (prev === item.id ? null : item.id))}
+                >
                   <div className="history-row-main">
                     <span className="history-check">✓</span>
                     <span className="history-title">{item.text}</span>
@@ -1275,7 +1366,25 @@ function App() {
                       </>
                     )}
                   </div>
-                </div>
+                  {expandedHistoryId === item.id && (
+                    <div className="history-details">
+                      {item.microGoals.length === 0 ? (
+                        <p className="secondary-text history-details-empty">Для этой цели микрошаги не сохранены.</p>
+                      ) : (
+                        <ul className="history-steps-list">
+                          {item.microGoals.map(step => (
+                            <li key={step.id}>
+                              <span className={`history-step-mark ${step.completed ? 'history-step-mark--done' : ''}`}>
+                                {step.completed ? '✓' : '•'}
+                              </span>
+                              <span>{step.text}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  )}
+                </button>
               ))}
             </div>
           )}
@@ -1344,6 +1453,65 @@ function App() {
             📅 Журнал
           </button>
         </nav>
+      )}
+
+      {taskEditor && (
+        <div className="modal-backdrop" onClick={closeTaskEditor}>
+          <section
+            className="task-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={taskEditor.mode === 'create' ? 'Новый микрошаг' : 'Редактирование микрошагa'}
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="task-modal-head">
+              <h2>{taskEditor.mode === 'create' ? 'Новый микрошаг' : 'Микрошаг'}</h2>
+              <button type="button" className="icon-button" onClick={closeTaskEditor}>
+                ✕
+              </button>
+            </div>
+            <textarea
+              className="big-input task-modal-input"
+              value={taskDraft}
+              onChange={e => setTaskDraft(e.target.value)}
+              placeholder="Опишите шаг"
+              autoFocus
+            />
+            <div className="task-modal-actions">
+              {editingTask && (
+                <button
+                  type="button"
+                  className="success-button"
+                  disabled={taskEditorBusy || editingTask.completed}
+                  onClick={async () => {
+                    await completeMicroGoal(taskEditor.goalId, editingTask.id)
+                    closeTaskEditor()
+                  }}
+                >
+                  Отметить выполненным
+                </button>
+              )}
+              <button
+                type="button"
+                className="primary-button"
+                disabled={taskEditorBusy || !String(taskDraft || '').trim()}
+                onClick={saveTaskEditor}
+              >
+                Сохранить
+              </button>
+              {editingTask && (
+                <button
+                  type="button"
+                  className="danger-button"
+                  disabled={taskEditorBusy}
+                  onClick={() => deleteTaskFromGoal(taskEditor.goalId, editingTask.id)}
+                >
+                  Удалить
+                </button>
+              )}
+            </div>
+          </section>
+        </div>
       )}
     </main>
   )

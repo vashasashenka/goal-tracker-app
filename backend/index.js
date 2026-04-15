@@ -36,6 +36,32 @@ const yandex = new OpenAI({
   baseURL: 'https://llm.api.cloud.yandex.net/v1',
 })
 
+async function ensureSchema() {
+  await pool.query('ALTER TABLE goals ADD COLUMN IF NOT EXISTS owner_key TEXT')
+  await pool.query('ALTER TABLE completed_goals ADD COLUMN IF NOT EXISTS owner_key TEXT')
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_goals_owner_key ON goals(owner_key)')
+  await pool.query(
+    'CREATE INDEX IF NOT EXISTS idx_completed_goals_owner_key ON completed_goals(owner_key)'
+  )
+}
+
+const schemaReady = ensureSchema().catch(error => {
+  console.error('Ошибка подготовки схемы БД:', error)
+  throw error
+})
+
+function getUserKey(req) {
+  const raw = String(req.get('x-user-key') || '').trim()
+  return raw || null
+}
+
+function requireUserKey(req, res) {
+  const userKey = getUserKey(req)
+  if (userKey) return userKey
+  res.status(400).json({ error: 'Не удалось определить пользователя' })
+  return null
+}
+
 function yandexMisconfigured(res) {
   const key = (process.env.YANDEX_API_KEY || '').trim()
   const folder = (process.env.YANDEX_FOLDER_ID || '').trim()
@@ -114,7 +140,7 @@ async function generateMicroGoals(goalText, existingTexts = [], count = 3) {
 
   const parsed = text
     .split('\n')
-    .map(t => t.replace(/^\d+[\).\s-]*/, '').trim())
+    .map(t => t.replace(/^\d+[).\s-]*/, '').trim())
     .filter(Boolean)
 
   const deduped = []
@@ -142,7 +168,12 @@ app.get('/', (req, res) => {
 
 app.get('/api/goals', async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM goals ORDER BY id DESC')
+    await schemaReady
+    const userKey = requireUserKey(req, res)
+    if (!userKey) return
+    const result = await pool.query('SELECT * FROM goals WHERE owner_key = $1 ORDER BY id DESC', [
+      userKey,
+    ])
 
     res.json(
       result.rows.map(row => ({
@@ -159,8 +190,12 @@ app.get('/api/goals', async (req, res) => {
 
 app.get('/api/completed-goals', async (req, res) => {
   try {
+    await schemaReady
+    const userKey = requireUserKey(req, res)
+    if (!userKey) return
     const result = await pool.query(
-      'SELECT * FROM completed_goals ORDER BY finished_at DESC NULLS LAST'
+      'SELECT * FROM completed_goals WHERE owner_key = $1 ORDER BY finished_at DESC NULLS LAST',
+      [userKey]
     )
 
     res.json(
@@ -210,6 +245,8 @@ app.post('/api/preview-microgoals', async (req, res) => {
 })
 app.post('/api/goals', async (req, res) => {
   const { text } = req.body
+  const userKey = requireUserKey(req, res)
+  if (!userKey) return
 
   if (!text || !text.trim()) {
     return res.status(400).json({ error: 'Текст цели обязателен' })
@@ -235,9 +272,10 @@ app.post('/api/goals', async (req, res) => {
   const id = Date.now()
 
   try {
+    await schemaReady
     await pool.query(
-      'INSERT INTO goals (id, text, micro_goals) VALUES ($1, $2, $3)',
-      [id, text, JSON.stringify(microGoals)]
+      'INSERT INTO goals (id, text, micro_goals, owner_key) VALUES ($1, $2, $3, $4)',
+      [id, text, JSON.stringify(microGoals), userKey]
     )
 
     res.status(201).json({
@@ -253,11 +291,17 @@ app.post('/api/goals', async (req, res) => {
 
 app.post('/api/goals/:id/generate-one', async (req, res) => {
   const goalId = Number(req.params.id)
+  const userKey = requireUserKey(req, res)
+  if (!userKey) return
 
   if (yandexMisconfigured(res)) return
 
   try {
-    const result = await pool.query('SELECT * FROM goals WHERE id = $1', [goalId])
+    await schemaReady
+    const result = await pool.query('SELECT * FROM goals WHERE id = $1 AND owner_key = $2', [
+      goalId,
+      userKey,
+    ])
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Цель не найдена' })
@@ -286,11 +330,14 @@ app.post('/api/goals/:id/generate-one', async (req, res) => {
 app.put('/api/goals/:id', async (req, res) => {
   const goalId = Number(req.params.id)
   const { text, microGoals } = req.body
+  const userKey = requireUserKey(req, res)
+  if (!userKey) return
 
   try {
+    await schemaReady
     const result = await pool.query(
-      'UPDATE goals SET text = $1, micro_goals = $2 WHERE id = $3 RETURNING *',
-      [text, JSON.stringify(microGoals), goalId]
+      'UPDATE goals SET text = $1, micro_goals = $2 WHERE id = $3 AND owner_key = $4 RETURNING *',
+      [text, JSON.stringify(microGoals), goalId, userKey]
     )
 
     if (result.rows.length === 0) {
@@ -312,7 +359,10 @@ app.put('/api/goals/:id', async (req, res) => {
 
 app.delete('/api/goals', async (req, res) => {
   try {
-    await pool.query('DELETE FROM goals')
+    await schemaReady
+    const userKey = requireUserKey(req, res)
+    if (!userKey) return
+    await pool.query('DELETE FROM goals WHERE owner_key = $1', [userKey])
     res.json({ message: 'Все активные цели удалены' })
   } catch (error) {
     console.error('Ошибка удаления целей:', error)
@@ -324,7 +374,10 @@ app.delete('/api/goals/:id', async (req, res) => {
   const goalId = Number(req.params.id)
 
   try {
-    await pool.query('DELETE FROM goals WHERE id = $1', [goalId])
+    await schemaReady
+    const userKey = requireUserKey(req, res)
+    if (!userKey) return
+    await pool.query('DELETE FROM goals WHERE id = $1 AND owner_key = $2', [goalId, userKey])
     res.json({ message: 'Цель удалена' })
   } catch (error) {
     console.error('Ошибка удаления цели:', error)
@@ -334,18 +387,21 @@ app.delete('/api/goals/:id', async (req, res) => {
 
 app.post('/api/completed-goals', async (req, res) => {
   const { id, text, microGoals, finishedAt } = req.body
+  const userKey = requireUserKey(req, res)
+  if (!userKey) return
 
   try {
+    await schemaReady
     await pool.query(
       `
-      INSERT INTO completed_goals (id, text, micro_goals, finished_at)
-      VALUES ($1, $2, $3, $4)
+      INSERT INTO completed_goals (id, text, micro_goals, finished_at, owner_key)
+      VALUES ($1, $2, $3, $4, $5)
       ON CONFLICT (id) DO NOTHING
       `,
-      [id, text, JSON.stringify(microGoals), finishedAt || null]
+      [id, text, JSON.stringify(microGoals), finishedAt || null, userKey]
     )
 
-    await pool.query('DELETE FROM goals WHERE id = $1', [id])
+    await pool.query('DELETE FROM goals WHERE id = $1 AND owner_key = $2', [id, userKey])
 
     res.status(201).json({
       id,
@@ -361,7 +417,10 @@ app.post('/api/completed-goals', async (req, res) => {
 
 app.delete('/api/completed-goals', async (req, res) => {
   try {
-    await pool.query('DELETE FROM completed_goals')
+    await schemaReady
+    const userKey = requireUserKey(req, res)
+    if (!userKey) return
+    await pool.query('DELETE FROM completed_goals WHERE owner_key = $1', [userKey])
     res.json({ message: 'История очищена' })
   } catch (error) {
     console.error('Ошибка очистки истории:', error)
