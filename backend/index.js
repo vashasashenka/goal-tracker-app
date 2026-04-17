@@ -113,6 +113,31 @@ function textSimilarity(a, b) {
   return intersection / union
 }
 
+const CHECKPOINT_GAP_DAYS = [3, 4, 7, 7, 14, 14, 21]
+
+function checkpointGapForIndex(index) {
+  if (index < CHECKPOINT_GAP_DAYS.length) return CHECKPOINT_GAP_DAYS[index]
+  const overflow = index - CHECKPOINT_GAP_DAYS.length
+  return 21 + Math.floor(overflow / 2) * 7
+}
+
+function checkpointOffsetForOrder(order) {
+  const safeOrder = Math.max(1, Math.trunc(Number(order) || 1))
+  let total = 0
+  for (let i = 0; i < safeOrder; i += 1) {
+    total += checkpointGapForIndex(i)
+  }
+  return total
+}
+
+function makeCheckpointHint(order) {
+  const checkpointOrder = Math.max(1, Math.trunc(Number(order) || 1))
+  return {
+    checkpointOrder,
+    recommendedOffsetDays: checkpointOffsetForOrder(checkpointOrder),
+  }
+}
+
 async function generateMicroGoals(goalText, existingTexts = [], count = 3) {
   const existingPart =
     existingTexts.length > 0
@@ -235,6 +260,7 @@ app.post('/api/preview-microgoals', async (req, res) => {
       text: t,
       completed: false,
       suggested: true,
+      ...makeCheckpointHint(i + 1),
     }))
 
     res.json(microGoals)
@@ -267,6 +293,7 @@ app.post('/api/goals', async (req, res) => {
     text: t,
     completed: false,
     suggested: true,
+    ...makeCheckpointHint(i + 1),
   }))
 
   const id = Date.now()
@@ -318,6 +345,7 @@ app.post('/api/goals/:id/generate-one', async (req, res) => {
       text: generated[0] || 'Следующий маленький шаг',
       completed: false,
       suggested: true,
+      ...makeCheckpointHint((Array.isArray(microGoals) ? microGoals.length : 0) + 1),
     }
 
     res.json(newMicroGoal)

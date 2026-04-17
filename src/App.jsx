@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 function normalizeApiBase(url) {
   const s = String(url ?? '').trim()
@@ -36,6 +36,188 @@ const SETTINGS_KEY = 'goal_tracker_settings'
 
 /** Сколько подсказок ИИ держим на экране (после добавления одной — дозаполняем до этого числа). */
 const AI_SUGGEST_SLOTS = 3
+const CHECKPOINT_GAP_DAYS = [3, 4, 7, 7, 14, 14, 21]
+
+function parseIsoDate(dateStr) {
+  const value = String(dateStr || '').trim()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null
+
+  const [year, month, day] = value.split('-').map(Number)
+  const date = new Date(year, month - 1, day)
+  if (
+    Number.isNaN(date.getTime()) ||
+    date.getFullYear() !== year ||
+    date.getMonth() !== month - 1 ||
+    date.getDate() !== day
+  ) {
+    return null
+  }
+
+  date.setHours(0, 0, 0, 0)
+  return date
+}
+
+function toIsoDate(date) {
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
+}
+
+function normalizeIsoDate(dateStr) {
+  const parsed = parseIsoDate(dateStr)
+  return parsed ? toIsoDate(parsed) : ''
+}
+
+function addDays(date, days) {
+  const next = new Date(date)
+  next.setHours(0, 0, 0, 0)
+  next.setDate(next.getDate() + Math.max(0, Math.trunc(Number(days) || 0)))
+  return next
+}
+
+function checkpointGapForIndex(index) {
+  if (index < CHECKPOINT_GAP_DAYS.length) return CHECKPOINT_GAP_DAYS[index]
+  const overflow = index - CHECKPOINT_GAP_DAYS.length
+  return 21 + Math.floor(overflow / 2) * 7
+}
+
+function checkpointOffsetForOrder(order) {
+  const safeOrder = Math.max(1, Math.trunc(Number(order) || 1))
+  let total = 0
+  for (let i = 0; i < safeOrder; i += 1) {
+    total += checkpointGapForIndex(i)
+  }
+  return total
+}
+
+function getNextCheckpointOrder(microGoals) {
+  return (
+    (Array.isArray(microGoals) ? microGoals : []).reduce((max, item) => {
+      const current = Math.trunc(Number(item?.checkpointOrder) || 0)
+      return current > max ? current : max
+    }, 0) + 1
+  )
+}
+
+function findPreviousCheckpoint(microGoals, checkpointOrder) {
+  return [...(Array.isArray(microGoals) ? microGoals : [])]
+    .filter(item => Number(item?.checkpointOrder) < checkpointOrder && normalizeIsoDate(item?.recommendedDate))
+    .sort((a, b) => Number(a.checkpointOrder || 0) - Number(b.checkpointOrder || 0))
+    .at(-1)
+}
+
+function inferRecommendedDate(checkpointOrder, microGoals) {
+  const previous = findPreviousCheckpoint(microGoals, checkpointOrder)
+  if (previous) {
+    const prevDate = parseIsoDate(previous.recommendedDate)
+    const prevOrder = Math.max(1, Math.trunc(Number(previous.checkpointOrder) || 1))
+    if (prevDate) {
+      const offset = checkpointOffsetForOrder(checkpointOrder) - checkpointOffsetForOrder(prevOrder)
+      return toIsoDate(addDays(prevDate, offset))
+    }
+  }
+
+  return toIsoDate(addDays(new Date(), checkpointOffsetForOrder(checkpointOrder)))
+}
+
+function normalizeMicroGoal(item, index, existingMicroGoals = []) {
+  if (item == null) return null
+
+  const checkpointOrderRaw = Math.trunc(Number(item.checkpointOrder) || 0)
+  const checkpointOrder = checkpointOrderRaw > 0 ? checkpointOrderRaw : index + 1
+  const recommendedDate =
+    normalizeIsoDate(item.recommendedDate) || inferRecommendedDate(checkpointOrder, existingMicroGoals)
+
+  return {
+    ...item,
+    completed: Boolean(item.completed),
+    suggested: Boolean(item.suggested),
+    checkpointOrder,
+    recommendedDate,
+  }
+}
+
+function normalizeMicroGoalsList(microGoals) {
+  const normalized = []
+  ;(Array.isArray(microGoals) ? microGoals : []).forEach((item, index) => {
+    const nextItem = normalizeMicroGoal(item, index, normalized)
+    if (nextItem) normalized.push(nextItem)
+  })
+  return normalized
+}
+
+function buildAppendedMicroGoal(existingMicroGoals, draft) {
+  const normalizedExisting = normalizeMicroGoalsList(existingMicroGoals)
+  const checkpointOrder = getNextCheckpointOrder(normalizedExisting)
+  const {
+    forceRecommendedDate,
+    recommendedOffsetDays,
+    ...restDraft
+  } = draft || {}
+
+  const allowPreferredDate = Boolean(forceRecommendedDate) || normalizedExisting.length === 0
+  let recommendedDate = allowPreferredDate ? normalizeIsoDate(restDraft?.recommendedDate) : ''
+  if (!recommendedDate && normalizedExisting.length === 0) {
+    const offset = Number(recommendedOffsetDays)
+    if (Number.isFinite(offset)) {
+      recommendedDate = toIsoDate(addDays(new Date(), offset))
+    }
+  }
+
+  return normalizeMicroGoal(
+    {
+      ...restDraft,
+      checkpointOrder,
+      recommendedDate: recommendedDate || inferRecommendedDate(checkpointOrder, normalizedExisting),
+    },
+    normalizedExisting.length,
+    normalizedExisting
+  )
+}
+
+function planSuggestedMicroGoals(items, goal = null) {
+  const planned = normalizeMicroGoalsList(goal?.microGoals)
+  return (Array.isArray(items) ? items : []).map(item => {
+    const nextItem = buildAppendedMicroGoal(planned, {
+      ...item,
+      completed: false,
+      suggested: item?.suggested ?? true,
+    })
+    planned.push(nextItem)
+    return nextItem
+  })
+}
+
+function formatRecommendedDate(dateStr, options = { day: 'numeric', month: 'short' }) {
+  const parsed = parseIsoDate(dateStr)
+  if (!parsed) return ''
+  return parsed
+    .toLocaleDateString('ru-RU', options)
+    .replace(/\s?г\.$/, '')
+    .replace(/\./g, '')
+}
+
+function isRecommendedDatePassed(task) {
+  if (!task || task.completed) return false
+  const parsed = parseIsoDate(task.recommendedDate)
+  if (!parsed) return false
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  return parsed.getTime() < today.getTime()
+}
+
+function compareMicroGoalsByCheckpoint(a, b) {
+  const aDate = parseIsoDate(a?.recommendedDate)?.getTime() ?? Number.MAX_SAFE_INTEGER
+  const bDate = parseIsoDate(b?.recommendedDate)?.getTime() ?? Number.MAX_SAFE_INTEGER
+  if (aDate !== bDate) return aDate - bDate
+
+  const aOrder = Math.trunc(Number(a?.checkpointOrder) || 0)
+  const bOrder = Math.trunc(Number(b?.checkpointOrder) || 0)
+  if (aOrder !== bOrder) return aOrder - bOrder
+
+  return String(a?.text || '').localeCompare(String(b?.text || ''), 'ru')
+}
 
 function makeScopedStorageKey(base, userKey) {
   return `${base}::${userKey || 'guest'}`
@@ -84,6 +266,13 @@ async function fetchPreviewMicrogoals(text, existingTexts, count = AI_SUGGEST_SL
     .map((item, index) => ({
       id: String(item.id ?? `s-${Date.now()}-${index}-${Math.random().toString(16).slice(2, 9)}`),
       text: item.text,
+      recommendedDate: normalizeIsoDate(item?.recommendedDate),
+      recommendedOffsetDays: Number.isFinite(Number(item?.recommendedOffsetDays))
+        ? Math.max(0, Math.trunc(Number(item.recommendedOffsetDays)))
+        : null,
+      checkpointOrder: Number.isFinite(Number(item?.checkpointOrder))
+        ? Math.max(1, Math.trunc(Number(item.checkpointOrder)))
+        : null,
     }))
     .filter(item => item.text)
 }
@@ -92,7 +281,7 @@ function normalizeGoal(goal) {
   if (goal == null) return null
   return {
     ...goal,
-    microGoals: Array.isArray(goal.microGoals) ? goal.microGoals : [],
+    microGoals: normalizeMicroGoalsList(goal.microGoals),
   }
 }
 
@@ -176,6 +365,7 @@ function App() {
   const [isAddingOwnStep, setIsAddingOwnStep] = useState(false)
   const [taskEditor, setTaskEditor] = useState(null)
   const [taskDraft, setTaskDraft] = useState('')
+  const [taskDateDraft, setTaskDateDraft] = useState('')
   const [taskEditorBusy, setTaskEditorBusy] = useState(false)
   const [expandedHistoryId, setExpandedHistoryId] = useState(null)
 
@@ -266,22 +456,19 @@ function App() {
     }
   }, [goals, activeGoalId, activeGoalStorageKey])
 
-  const safeGoals = Array.isArray(goals) ? goals : []
-  const safeCompletedGoals = Array.isArray(completedGoals) ? completedGoals : []
+  const safeGoals = useMemo(() => (Array.isArray(goals) ? goals : []), [goals])
+  const safeCompletedGoals = useMemo(
+    () => (Array.isArray(completedGoals) ? completedGoals : []),
+    [completedGoals]
+  )
 
   const activeGoal = normalizeGoal(safeGoals.find(g => g.id === activeGoalId) ?? null)
 
   const agendaMicroTasks = useMemo(() => {
     const list = activeGoal?.microGoals
     if (!Array.isArray(list)) return []
-    return list.filter(t => !t.completed)
+    return [...list].filter(t => !t.completed).sort(compareMicroGoalsByCheckpoint)
   }, [activeGoal])
-
-  useEffect(() => {
-    if (activeTab === 'agenda' && activeGoal?.text) {
-      requestPreviewSuggestions(activeGoal.text)
-    }
-  }, [activeTab, activeGoal?.id, activeGoal?.text])
 
   function switchActiveGoal(delta) {
     if (safeGoals.length <= 1) return
@@ -420,10 +607,11 @@ function App() {
         const when = new Date(goal.finishedAt || Date.now())
         const y = when.getFullYear()
         const nowY = new Date().getFullYear()
+        const microGoals = normalizeMicroGoalsList(goal.microGoals).sort(compareMicroGoalsByCheckpoint)
         return {
           id: goal.id,
           text: goal.text,
-          microGoals: Array.isArray(goal.microGoals) ? goal.microGoals : [],
+          microGoals,
           when,
           dateStr: when.toLocaleDateString('ru-RU', {
             day: 'numeric',
@@ -434,25 +622,63 @@ function App() {
             hour: '2-digit',
             minute: '2-digit',
           }),
-          stepsCount: Array.isArray(goal.microGoals) ? goal.microGoals.length : 0,
+          stepsCount: microGoals.length,
         }
       })
   }, [safeCompletedGoals])
 
   function openTaskEditor(goalId, task = null) {
+    const goal = normalizeGoal(safeGoals.find(item => item.id === goalId) ?? null)
+    const checkpointOrder = task?.checkpointOrder ?? getNextCheckpointOrder(goal?.microGoals)
+    const recommendedDate =
+      normalizeIsoDate(task?.recommendedDate) ||
+      inferRecommendedDate(checkpointOrder, goal?.microGoals || [])
+
     setTaskEditor({
       goalId,
       taskId: task?.id ?? null,
       mode: task ? 'edit' : 'create',
+      checkpointOrder,
     })
     setTaskDraft(String(task?.text || ''))
+    setTaskDateDraft(recommendedDate)
     setAiError('')
   }
 
   function closeTaskEditor() {
     setTaskEditor(null)
     setTaskDraft('')
+    setTaskDateDraft('')
     setTaskEditorBusy(false)
+  }
+
+  async function saveTaskDate(goalId, taskId, nextDate) {
+    const goal = safeGoals.find(item => item.id === goalId)
+    if (!goal) return
+
+    const normalizedDate = normalizeIsoDate(nextDate)
+    if (!normalizedDate) return
+
+    const otherMicroGoals = (goal.microGoals || []).filter(item => item.id !== taskId)
+    const microGoals = (goal.microGoals || []).map(item =>
+      item.id === taskId
+        ? normalizeMicroGoal(
+            {
+              ...item,
+              recommendedDate: normalizedDate,
+            },
+            0,
+            otherMicroGoals
+          )
+        : item
+    )
+
+    const saved = normalizeGoal(await updateGoalLocally({ ...goal, microGoals }))
+    setGoals(prev => prev.map(item => (item.id === saved.id ? saved : item)))
+
+    if (taskEditor?.goalId === goalId && taskEditor?.taskId === taskId) {
+      setTaskDateDraft(normalizedDate)
+    }
   }
 
   const editingTask = useMemo(() => {
@@ -532,7 +758,7 @@ function App() {
         ...onScreenTexts,
       ]
       const fresh = await fetchPreviewMicrogoals(titleText, existingTexts, 1)
-      const one = fresh[0]
+      const one = planSuggestedMicroGoals(fresh, savedGoal)[0]
       const textOk = String(one?.text || '').trim()
       setRecommendations(prev => {
         if (!textOk) return prev.filter(r => r.id !== ph.id)
@@ -542,6 +768,9 @@ function App() {
                 id: String(one?.id ?? `r-${Date.now()}-${Math.random().toString(16).slice(2, 9)}`),
                 text: textOk,
                 icon: '✨',
+                checkpointOrder: one.checkpointOrder,
+                recommendedDate: one.recommendedDate,
+                recommendedOffsetDays: one.recommendedOffsetDays ?? null,
                 instantEnter: true,
               }
             : r
@@ -553,17 +782,18 @@ function App() {
     }
   }
 
-  async function requestPreviewSuggestions(sourceText) {
+  const requestPreviewSuggestions = useCallback(async sourceText => {
     const trimmed = String(sourceText || '').trim()
     if (!trimmed) return
     setRecommendationsSource(trimmed)
     try {
       const existingTexts = (activeGoal?.microGoals || []).map(item => item.text)
       const clean = await fetchPreviewMicrogoals(trimmed, existingTexts, AI_SUGGEST_SLOTS)
+      const planned = planSuggestedMicroGoals(clean, activeGoal)
       setRecommendations(
-        clean.map(item => ({
+        planned.map(item => ({
+          ...item,
           id: item.id,
-          text: item.text,
           icon: '✨',
         }))
       )
@@ -571,7 +801,13 @@ function App() {
       console.error('Ошибка получения рекомендаций:', error)
       setRecommendations([])
     }
-  }
+  }, [activeGoal])
+
+  useEffect(() => {
+    if (activeTab === 'agenda' && activeGoal?.text) {
+      requestPreviewSuggestions(activeGoal.text)
+    }
+  }, [activeTab, activeGoal?.id, activeGoal?.text, requestPreviewSuggestions])
 
   async function addRecommendationToActiveGoal(item) {
     if (item.placeholder) return
@@ -594,16 +830,19 @@ function App() {
       }
 
       if (hasSimilarTaskDuplicate(goal, item.text)) return
+      const nextMicroGoal = buildAppendedMicroGoal(goal?.microGoals, {
+        id: Date.now(),
+        text: item.text,
+        completed: false,
+        suggested: true,
+        recommendedDate: item.recommendedDate,
+        recommendedOffsetDays: item.recommendedOffsetDays,
+      })
       const updatedGoal = {
         ...goal,
         microGoals: [
           ...(goal.microGoals || []),
-          {
-            id: Date.now(),
-            text: item.text,
-            completed: false,
-            suggested: true,
-          },
+          nextMicroGoal,
         ],
       }
       const saved = await updateGoalLocally(updatedGoal)
@@ -626,9 +865,12 @@ function App() {
     setGeneratedSteps([])
 
     try {
+      const baseGoal =
+        findGoalByTitle(safeGoals, text) ||
+        (activeGoal && goalTitlesAlign(text, activeGoal.text) ? activeGoal : null)
       const existingTexts = [
         ...safeExcludeTexts,
-        ...(activeGoal?.microGoals || []).map(item => item.text),
+        ...(baseGoal?.microGoals || []).map(item => item.text),
       ]
       const clean = await fetchPreviewMicrogoals(text, existingTexts, AI_SUGGEST_SLOTS)
 
@@ -636,7 +878,7 @@ function App() {
         throw new Error('empty')
       }
 
-      setGeneratedSteps(clean)
+      setGeneratedSteps(planSuggestedMicroGoals(clean, baseGoal))
     } catch (error) {
       console.error('Ошибка генерации:', error)
       const m = error?.message
@@ -672,12 +914,12 @@ function App() {
       if (baseGoal) {
         const microGoals = [
           ...(baseGoal.microGoals || []),
-          {
+          buildAppendedMicroGoal(baseGoal.microGoals, {
             id: Date.now() + Math.floor(Math.random() * 1000),
             text: t,
             completed: false,
             suggested: false,
-          },
+          }),
         ]
         const updated = await updateGoalLocally({ ...baseGoal, microGoals })
         const savedGoal = normalizeGoal(updated)
@@ -688,12 +930,12 @@ function App() {
         const created = await createGoal(goalTitle)
         if (!created) return
         const microGoals = [
-          {
+          buildAppendedMicroGoal(created.microGoals, {
             id: Date.now(),
             text: t,
             completed: false,
             suggested: false,
-          },
+          }),
         ]
         const updated = await updateGoalLocally({
           ...created,
@@ -747,12 +989,14 @@ function App() {
       if (savedGoal && !hasSimilarTaskDuplicate(savedGoal, stepText)) {
         const microGoals = [
           ...(savedGoal.microGoals || []),
-          {
+          buildAppendedMicroGoal(savedGoal.microGoals, {
             id: Date.now() + Math.floor(Math.random() * 1000),
             text: stepText,
             completed: false,
             suggested: true,
-          },
+            recommendedDate: step.recommendedDate,
+            recommendedOffsetDays: step.recommendedOffsetDays,
+          }),
         ]
         const updated = await updateGoalLocally({ ...savedGoal, microGoals })
         savedGoal = normalizeGoal(updated)
@@ -763,12 +1007,14 @@ function App() {
         const created = await createGoal(goalTitle)
         if (!created) return
         const microGoals = [
-          {
+          buildAppendedMicroGoal(created.microGoals, {
             id: Date.now(),
             text: stepText,
             completed: false,
             suggested: true,
-          },
+            recommendedDate: step.recommendedDate,
+            recommendedOffsetDays: step.recommendedOffsetDays,
+          }),
         ]
         const updated = await updateGoalLocally({
           ...created,
@@ -791,7 +1037,7 @@ function App() {
       ].filter(Boolean)
 
       const fresh = await fetchPreviewMicrogoals(goalTitle, existingTexts, 1)
-      const one = fresh[0]
+      const one = planSuggestedMicroGoals(fresh, savedGoal)[0]
       const newText = String(one?.text || '').trim()
 
       setGeneratedSteps(prev => {
@@ -804,6 +1050,9 @@ function App() {
         next[idx] = {
           id: String(one?.id ?? `s-${Date.now()}-${idx}-${Math.random().toString(16).slice(2, 9)}`),
           text: newText,
+          checkpointOrder: one.checkpointOrder,
+          recommendedDate: one.recommendedDate,
+          recommendedOffsetDays: one.recommendedOffsetDays ?? null,
           instantEnter: true,
         }
         return next
@@ -834,19 +1083,34 @@ function App() {
 
     setTaskEditorBusy(true)
     try {
+      const otherMicroGoals = (goal.microGoals || []).filter(item => item.id !== taskEditor.taskId)
       const microGoals =
         taskEditor.mode === 'create'
           ? [
               ...(goal.microGoals || []),
-              {
+              buildAppendedMicroGoal(goal.microGoals, {
                 id: Date.now() + Math.floor(Math.random() * 1000),
                 text,
                 completed: false,
                 suggested: false,
-              },
+                recommendedDate: taskDateDraft,
+                forceRecommendedDate: true,
+              }),
             ]
           : (goal.microGoals || []).map(item =>
-              item.id === taskEditor.taskId ? { ...item, text } : item
+              item.id === taskEditor.taskId
+                ? normalizeMicroGoal(
+                    {
+                      ...item,
+                      text,
+                      recommendedDate:
+                        normalizeIsoDate(taskDateDraft) ||
+                        inferRecommendedDate(item.checkpointOrder, otherMicroGoals),
+                    },
+                    0,
+                    otherMicroGoals
+                  )
+                : item
             )
 
       const saved = normalizeGoal(await updateGoalLocally({ ...goal, microGoals }))
@@ -1074,16 +1338,38 @@ function App() {
               ) : (
                 <div className="tasks-grid">
                   {agendaMicroTasks.map((task, index) => (
-                    <button
+                    <article
                       key={task.id}
-                      type="button"
                       className="task-card micro-appear"
                       style={{ '--appear-i': index }}
-                      onClick={() => openTaskEditor(activeGoal.id, task)}
                     >
-                      <span>☐</span>
-                      <strong>{task.text}</strong>
-                    </button>
+                      <button
+                        type="button"
+                        className="task-card-main"
+                        onClick={() => openTaskEditor(activeGoal.id, task)}
+                      >
+                        <span className="task-card-check">☐</span>
+                        <strong>{task.text}</strong>
+                      </button>
+                      <div className="task-card-actions">
+                        <label
+                          className={`task-date-button ${isRecommendedDatePassed(task) ? 'task-date-button--overdue' : ''}`}
+                        >
+                          {task.recommendedDate
+                            ? `Дата: ${formatRecommendedDate(task.recommendedDate)}`
+                            : 'Выбрать дату'}
+                          <input
+                            type="date"
+                            className="task-date-native"
+                            value={normalizeIsoDate(task.recommendedDate)}
+                            onChange={e => saveTaskDate(activeGoal.id, task.id, e.target.value)}
+                          />
+                        </label>
+                      </div>
+                      {isRecommendedDatePassed(task) && (
+                        <span className="task-card-warning">Рекомендованная дата уже прошла</span>
+                      )}
+                    </article>
                   ))}
                 </div>
               )}
@@ -1116,7 +1402,12 @@ function App() {
                         className={`recommendation-card ${item.instantEnter ? 'micro-appear-instant' : 'micro-appear'}`}
                         style={item.instantEnter ? undefined : { '--appear-i': index }}
                       >
-                        <div>{item.icon}</div>
+                        <div className="recommendation-icon">{item.icon}</div>
+                        {item.recommendedDate && (
+                          <span className="checkpoint-date-chip">
+                            до {formatRecommendedDate(item.recommendedDate)}
+                          </span>
+                        )}
                         <p>{item.text}</p>
                         <button type="button" onClick={() => addRecommendationToActiveGoal(item)}>
                           ➕
@@ -1224,7 +1515,14 @@ function App() {
                       style={step.instantEnter ? undefined : { '--appear-i': index }}
                     >
                       <span className="gen-step-num">{index + 1}.</span>
-                      <span className="gen-step-text">{step.text}</span>
+                      <div className="gen-step-main">
+                        {step.recommendedDate && (
+                          <span className="checkpoint-date-chip">
+                            до {formatRecommendedDate(step.recommendedDate)}
+                          </span>
+                        )}
+                        <span className="gen-step-text">{step.text}</span>
+                      </div>
                       <div className="gen-step-actions">
                         <button
                           type="button"
@@ -1377,7 +1675,14 @@ function App() {
                               <span className={`history-step-mark ${step.completed ? 'history-step-mark--done' : ''}`}>
                                 {step.completed ? '✓' : '•'}
                               </span>
-                              <span>{step.text}</span>
+                              <div className="history-step-body">
+                                <span>{step.text}</span>
+                                <div className="history-step-meta">
+                                  {step.recommendedDate && (
+                                    <span>до {formatRecommendedDate(step.recommendedDate, { day: 'numeric', month: 'long' })}</span>
+                                  )}
+                                </div>
+                              </div>
                             </li>
                           ))}
                         </ul>
@@ -1477,6 +1782,18 @@ function App() {
               placeholder="Опишите шаг"
               autoFocus
             />
+            <div className="task-modal-field">
+              <label htmlFor="task-recommended-date" className="task-modal-label">
+                Дата
+              </label>
+              <input
+                id="task-recommended-date"
+                type="date"
+                className="task-date-input"
+                value={taskDateDraft}
+                onChange={e => setTaskDateDraft(e.target.value)}
+              />
+            </div>
             <div className="task-modal-actions">
               {editingTask && (
                 <button
