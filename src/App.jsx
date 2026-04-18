@@ -219,6 +219,16 @@ function compareMicroGoalsByCheckpoint(a, b) {
   return String(a?.text || '').localeCompare(String(b?.text || ''), 'ru')
 }
 
+function getRecommendationCacheKey(goal, sourceText = '') {
+  const goalId = goal?.id
+  if (goalId != null && Number.isFinite(Number(goalId))) {
+    return `goal:${goalId}`
+  }
+
+  const trimmed = String(sourceText || '').trim()
+  return trimmed ? `text:${normalizeTaskText(trimmed)}` : ''
+}
+
 function makeScopedStorageKey(base, userKey) {
   return `${base}::${userKey || 'guest'}`
 }
@@ -363,14 +373,15 @@ function App() {
   const [genCustomInput, setGenCustomInput] = useState('')
   const [genCustomDateDraft, setGenCustomDateDraft] = useState('')
   const [genRowBusyId, setGenRowBusyId] = useState(null)
-  const [openGeneratedCalendarId, setOpenGeneratedCalendarId] = useState(null)
-  const [showOwnDatePicker, setShowOwnDatePicker] = useState(false)
+  const [generatedDateEditor, setGeneratedDateEditor] = useState(null)
   const [isAddingOwnStep, setIsAddingOwnStep] = useState(false)
   const [taskEditor, setTaskEditor] = useState(null)
   const [taskDraft, setTaskDraft] = useState('')
   const [taskDateDraft, setTaskDateDraft] = useState('')
   const [taskEditorBusy, setTaskEditorBusy] = useState(false)
   const [expandedHistoryId, setExpandedHistoryId] = useState(null)
+  const [recommendationsCache, setRecommendationsCache] = useState({})
+  const generatedDateInputRef = useRef(null)
 
   const userKey = initialProfileId
   const activeGoalStorageKey = useMemo(() => makeScopedStorageKey(ACTIVE_GOAL_KEY, userKey), [userKey])
@@ -389,10 +400,24 @@ function App() {
     setGenCustomDateDraft('')
     setIsGenerating(false)
     setGenRowBusyId(null)
-    setOpenGeneratedCalendarId(null)
-    setShowOwnDatePicker(false)
+    setGeneratedDateEditor(null)
     setIsAddingOwnStep(false)
   }
+
+  useEffect(() => {
+    if (!generatedDateEditor) return
+    const frame = requestAnimationFrame(() => {
+      const input = generatedDateInputRef.current
+      if (!input) return
+      input.focus()
+      try {
+        input.showPicker?.()
+      } catch {
+        /* noop */
+      }
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [generatedDateEditor])
 
   useEffect(() => {
     localStorage.setItem(settingsStorageKey, JSON.stringify(settings))
@@ -739,6 +764,26 @@ function App() {
     setGoals(prev => prev.map(item => (item.id === saved.id ? saved : item)))
   }
 
+  const storeRecommendationsInCache = useCallback((goal, sourceText, items) => {
+    const key = getRecommendationCacheKey(goal, sourceText)
+    if (!key) return
+    setRecommendationsCache(prev => ({
+      ...prev,
+      [key]: Array.isArray(items) ? items.map(item => ({ ...item })) : [],
+    }))
+  }, [])
+
+  function openGeneratedDateEditor(mode, payload = {}) {
+    setGeneratedDateEditor({
+      mode,
+      ...payload,
+    })
+  }
+
+  function closeGeneratedDateEditor() {
+    setGeneratedDateEditor(null)
+  }
+
   async function refillRecommendationSlotInPlace(removedItemId, savedGoal) {
     const titleText = String(savedGoal?.text || '').trim()
     if (!titleText) return
@@ -755,8 +800,9 @@ function App() {
       placeholder: true,
     }
     const onScreenTexts = real.filter(r => r.id !== removedItemId).map(r => r.text)
-
-    setRecommendations([...real.slice(0, idx), ph, ...real.slice(idx + 1)])
+    const placeholderList = [...real.slice(0, idx), ph, ...real.slice(idx + 1)]
+    setRecommendations(placeholderList)
+    storeRecommendationsInCache(savedGoal, titleText, placeholderList)
 
     try {
       const existingTexts = [
@@ -767,8 +813,9 @@ function App() {
       const one = planSuggestedMicroGoals(fresh, savedGoal)[0]
       const textOk = String(one?.text || '').trim()
       setRecommendations(prev => {
-        if (!textOk) return prev.filter(r => r.id !== ph.id)
-        return prev.map(r =>
+        const nextRecommendations = !textOk
+          ? prev.filter(r => r.id !== ph.id)
+          : prev.map(r =>
           r.id === ph.id && r.placeholder
             ? {
                 id: String(one?.id ?? `r-${Date.now()}-${Math.random().toString(16).slice(2, 9)}`),
@@ -781,10 +828,16 @@ function App() {
               }
             : r
         )
+        storeRecommendationsInCache(savedGoal, titleText, nextRecommendations)
+        return nextRecommendations
       })
     } catch (error) {
       console.error('Дозаполнение рекомендаций:', error)
-      setRecommendations(prev => prev.filter(r => r.id !== ph.id))
+      setRecommendations(prev => {
+        const nextRecommendations = prev.filter(r => r.id !== ph.id)
+        storeRecommendationsInCache(savedGoal, titleText, nextRecommendations)
+        return nextRecommendations
+      })
     }
   }
 
@@ -792,22 +845,28 @@ function App() {
     const trimmed = String(sourceText || '').trim()
     if (!trimmed) return
     setRecommendationsSource(trimmed)
+    const cacheKey = getRecommendationCacheKey(activeGoal, trimmed)
+    const cached = cacheKey ? recommendationsCache[cacheKey] : null
+    if (Array.isArray(cached) && cached.length > 0) {
+      setRecommendations(cached.map(item => ({ ...item })))
+      return
+    }
     try {
       const existingTexts = (activeGoal?.microGoals || []).map(item => item.text)
       const clean = await fetchPreviewMicrogoals(trimmed, existingTexts, AI_SUGGEST_SLOTS)
       const planned = planSuggestedMicroGoals(clean, activeGoal)
-      setRecommendations(
-        planned.map(item => ({
+      const nextRecommendations = planned.map(item => ({
           ...item,
           id: item.id,
           icon: '✨',
         }))
-      )
+      setRecommendations(nextRecommendations)
+      storeRecommendationsInCache(activeGoal, trimmed, nextRecommendations)
     } catch (error) {
       console.error('Ошибка получения рекомендаций:', error)
       setRecommendations([])
     }
-  }, [activeGoal])
+  }, [activeGoal, recommendationsCache, storeRecommendationsInCache])
 
   useEffect(() => {
     if (activeTab === 'agenda' && activeGoal?.text) {
@@ -960,7 +1019,7 @@ function App() {
 
       setGenCustomInput('')
       setGenCustomDateDraft('')
-      setShowOwnDatePicker(false)
+      closeGeneratedDateEditor()
     } catch (error) {
       console.error('Свой микрошаг на повестку:', error)
       setAiError('Не удалось добавить шаг')
@@ -976,14 +1035,9 @@ function App() {
     setGenCustomInput('')
     setGenCustomDateDraft('')
     setGenRowBusyId(null)
-    setOpenGeneratedCalendarId(null)
-    setShowOwnDatePicker(false)
+    closeGeneratedDateEditor()
     setIsAddingOwnStep(false)
     setAiError('')
-  }
-
-  function toggleGeneratedStepCalendar(stepId) {
-    setOpenGeneratedCalendarId(prev => (prev === stepId ? null : stepId))
   }
 
   function updateGeneratedStepDate(stepId, nextDate) {
@@ -999,7 +1053,12 @@ function App() {
           : step
       )
     )
-    setOpenGeneratedCalendarId(null)
+    closeGeneratedDateEditor()
+  }
+
+  function updateOwnGeneratedDate(nextDate) {
+    setGenCustomDateDraft(normalizeIsoDate(nextDate))
+    closeGeneratedDateEditor()
   }
 
   async function addGeneratedStepToAgendaAndRefill(stepId) {
@@ -1099,7 +1158,7 @@ function App() {
       setAiError('Не удалось добавить шаг или получить новую подсказку')
     } finally {
       setGenRowBusyId(null)
-      setOpenGeneratedCalendarId(null)
+      closeGeneratedDateEditor()
     }
   }
 
@@ -1559,24 +1618,18 @@ function App() {
                       <div className="gen-step-actions">
                         <button
                           type="button"
-                          className={`gen-step-icon-btn gen-step-calendar-btn ${openGeneratedCalendarId === step.id ? 'gen-step-calendar-btn--active' : ''} ${step.userPickedDate ? 'gen-step-calendar-btn--selected' : ''}`}
+                          className={`gen-step-icon-btn gen-step-calendar-btn ${generatedDateEditor?.mode === 'generated' && generatedDateEditor?.stepId === step.id ? 'gen-step-calendar-btn--active' : ''} ${step.userPickedDate ? 'gen-step-calendar-btn--selected' : ''}`}
                           aria-label="Выбрать дату"
                           disabled={isGenerating || isAddingOwnStep || genRowBusyId === step.id}
-                          onClick={() => toggleGeneratedStepCalendar(step.id)}
+                          onClick={() =>
+                            openGeneratedDateEditor('generated', {
+                              stepId: step.id,
+                              value: normalizeIsoDate(step.recommendedDate),
+                            })
+                          }
                         >
                           📅
                         </button>
-                        {openGeneratedCalendarId === step.id && (
-                          <div className="gen-date-popover">
-                            <span className="gen-date-popover-label">Дата</span>
-                            <input
-                              type="date"
-                              className="gen-date-input"
-                              value={normalizeIsoDate(step.recommendedDate)}
-                              onChange={e => updateGeneratedStepDate(step.id, e.target.value)}
-                            />
-                          </div>
-                        )}
                         <button
                           type="button"
                           className="gen-step-icon-btn gen-step-add-btn"
@@ -1613,27 +1666,17 @@ function App() {
                   <div className="gen-own-actions">
                     <button
                       type="button"
-                      className={`gen-step-icon-btn gen-step-calendar-btn ${showOwnDatePicker ? 'gen-step-calendar-btn--active' : ''} ${genCustomDateDraft ? 'gen-step-calendar-btn--selected' : ''}`}
+                      className={`gen-step-icon-btn gen-step-calendar-btn ${generatedDateEditor?.mode === 'own' ? 'gen-step-calendar-btn--active' : ''} ${genCustomDateDraft ? 'gen-step-calendar-btn--selected' : ''}`}
                       aria-label="Выбрать дату для своего шага"
                       disabled={isAddingOwnStep}
-                      onClick={() => setShowOwnDatePicker(prev => !prev)}
+                      onClick={() =>
+                        openGeneratedDateEditor('own', {
+                          value: genCustomDateDraft,
+                        })
+                      }
                     >
                       📅
                     </button>
-                    {showOwnDatePicker && (
-                      <div className="gen-date-popover gen-date-popover--own">
-                        <span className="gen-date-popover-label">Дата</span>
-                        <input
-                          type="date"
-                          className="gen-date-input"
-                          value={genCustomDateDraft}
-                          onChange={e => {
-                            setGenCustomDateDraft(normalizeIsoDate(e.target.value))
-                            setShowOwnDatePicker(false)
-                          }}
-                        />
-                      </div>
-                    )}
                   </div>
                   <button
                     type="button"
@@ -1649,6 +1692,44 @@ function App() {
             </div>
           )}
         </section>
+      )}
+
+      {generatedDateEditor && (
+        <div className="modal-backdrop" onClick={closeGeneratedDateEditor}>
+          <section
+            className="date-picker-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Выбор даты"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="date-picker-modal-head">
+              <h2>Дата</h2>
+              <button type="button" className="icon-button" onClick={closeGeneratedDateEditor}>
+                ✕
+              </button>
+            </div>
+            <div className="task-modal-field">
+              <label htmlFor="generated-date-input" className="task-modal-label">
+                Выберите дату
+              </label>
+              <input
+                ref={generatedDateInputRef}
+                id="generated-date-input"
+                type="date"
+                className="task-date-input"
+                value={generatedDateEditor.value || ''}
+                onChange={e => {
+                  if (generatedDateEditor.mode === 'generated') {
+                    updateGeneratedStepDate(generatedDateEditor.stepId, e.target.value)
+                  } else {
+                    updateOwnGeneratedDate(e.target.value)
+                  }
+                }}
+              />
+            </div>
+          </section>
+        </div>
       )}
 
       {!showProfile && activeTab === 'journal' && (
