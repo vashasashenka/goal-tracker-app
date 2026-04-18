@@ -361,7 +361,10 @@ function App() {
   const [isGenerating, setIsGenerating] = useState(false)
   const [showGeneratedResult, setShowGeneratedResult] = useState(false)
   const [genCustomInput, setGenCustomInput] = useState('')
+  const [genCustomDateDraft, setGenCustomDateDraft] = useState('')
   const [genRowBusyId, setGenRowBusyId] = useState(null)
+  const [openGeneratedCalendarId, setOpenGeneratedCalendarId] = useState(null)
+  const [showOwnDatePicker, setShowOwnDatePicker] = useState(false)
   const [isAddingOwnStep, setIsAddingOwnStep] = useState(false)
   const [taskEditor, setTaskEditor] = useState(null)
   const [taskDraft, setTaskDraft] = useState('')
@@ -383,8 +386,11 @@ function App() {
     setGeneratedSteps([])
     setShowGeneratedResult(false)
     setGenCustomInput('')
+    setGenCustomDateDraft('')
     setIsGenerating(false)
     setGenRowBusyId(null)
+    setOpenGeneratedCalendarId(null)
+    setShowOwnDatePicker(false)
     setIsAddingOwnStep(false)
   }
 
@@ -919,6 +925,8 @@ function App() {
             text: t,
             completed: false,
             suggested: false,
+            recommendedDate: genCustomDateDraft,
+            forceRecommendedDate: Boolean(genCustomDateDraft),
           }),
         ]
         const updated = await updateGoalLocally({ ...baseGoal, microGoals })
@@ -935,6 +943,8 @@ function App() {
             text: t,
             completed: false,
             suggested: false,
+            recommendedDate: genCustomDateDraft,
+            forceRecommendedDate: Boolean(genCustomDateDraft),
           }),
         ]
         const updated = await updateGoalLocally({
@@ -949,6 +959,8 @@ function App() {
       }
 
       setGenCustomInput('')
+      setGenCustomDateDraft('')
+      setShowOwnDatePicker(false)
     } catch (error) {
       console.error('Свой микрошаг на повестку:', error)
       setAiError('Не удалось добавить шаг')
@@ -962,9 +974,32 @@ function App() {
     setGeneratedSteps([])
     setGenerationInput('')
     setGenCustomInput('')
+    setGenCustomDateDraft('')
     setGenRowBusyId(null)
+    setOpenGeneratedCalendarId(null)
+    setShowOwnDatePicker(false)
     setIsAddingOwnStep(false)
     setAiError('')
+  }
+
+  function toggleGeneratedStepCalendar(stepId) {
+    setOpenGeneratedCalendarId(prev => (prev === stepId ? null : stepId))
+  }
+
+  function updateGeneratedStepDate(stepId, nextDate) {
+    const normalizedDate = normalizeIsoDate(nextDate)
+    setGeneratedSteps(prev =>
+      prev.map(step =>
+        step.id === stepId
+          ? {
+              ...step,
+              recommendedDate: normalizedDate,
+              userPickedDate: Boolean(normalizedDate),
+            }
+          : step
+      )
+    )
+    setOpenGeneratedCalendarId(null)
   }
 
   async function addGeneratedStepToAgendaAndRefill(stepId) {
@@ -996,6 +1031,7 @@ function App() {
             suggested: true,
             recommendedDate: step.recommendedDate,
             recommendedOffsetDays: step.recommendedOffsetDays,
+            forceRecommendedDate: Boolean(step.userPickedDate),
           }),
         ]
         const updated = await updateGoalLocally({ ...savedGoal, microGoals })
@@ -1014,6 +1050,7 @@ function App() {
             suggested: true,
             recommendedDate: step.recommendedDate,
             recommendedOffsetDays: step.recommendedOffsetDays,
+            forceRecommendedDate: Boolean(step.userPickedDate),
           }),
         ]
         const updated = await updateGoalLocally({
@@ -1062,6 +1099,7 @@ function App() {
       setAiError('Не удалось добавить шаг или получить новую подсказку')
     } finally {
       setGenRowBusyId(null)
+      setOpenGeneratedCalendarId(null)
     }
   }
 
@@ -1516,14 +1554,29 @@ function App() {
                     >
                       <span className="gen-step-num">{index + 1}.</span>
                       <div className="gen-step-main">
-                        {step.recommendedDate && (
-                          <span className="checkpoint-date-chip">
-                            до {formatRecommendedDate(step.recommendedDate)}
-                          </span>
-                        )}
                         <span className="gen-step-text">{step.text}</span>
                       </div>
                       <div className="gen-step-actions">
+                        <button
+                          type="button"
+                          className={`gen-step-icon-btn gen-step-calendar-btn ${openGeneratedCalendarId === step.id ? 'gen-step-calendar-btn--active' : ''} ${step.userPickedDate ? 'gen-step-calendar-btn--selected' : ''}`}
+                          aria-label="Выбрать дату"
+                          disabled={isGenerating || isAddingOwnStep || genRowBusyId === step.id}
+                          onClick={() => toggleGeneratedStepCalendar(step.id)}
+                        >
+                          📅
+                        </button>
+                        {openGeneratedCalendarId === step.id && (
+                          <div className="gen-date-popover">
+                            <span className="gen-date-popover-label">Дата</span>
+                            <input
+                              type="date"
+                              className="gen-date-input"
+                              value={normalizeIsoDate(step.recommendedDate)}
+                              onChange={e => updateGeneratedStepDate(step.id, e.target.value)}
+                            />
+                          </div>
+                        )}
                         <button
                           type="button"
                           className="gen-step-icon-btn gen-step-add-btn"
@@ -1557,6 +1610,31 @@ function App() {
                     }}
                     disabled={isAddingOwnStep}
                   />
+                  <div className="gen-own-actions">
+                    <button
+                      type="button"
+                      className={`gen-step-icon-btn gen-step-calendar-btn ${showOwnDatePicker ? 'gen-step-calendar-btn--active' : ''} ${genCustomDateDraft ? 'gen-step-calendar-btn--selected' : ''}`}
+                      aria-label="Выбрать дату для своего шага"
+                      disabled={isAddingOwnStep}
+                      onClick={() => setShowOwnDatePicker(prev => !prev)}
+                    >
+                      📅
+                    </button>
+                    {showOwnDatePicker && (
+                      <div className="gen-date-popover gen-date-popover--own">
+                        <span className="gen-date-popover-label">Дата</span>
+                        <input
+                          type="date"
+                          className="gen-date-input"
+                          value={genCustomDateDraft}
+                          onChange={e => {
+                            setGenCustomDateDraft(normalizeIsoDate(e.target.value))
+                            setShowOwnDatePicker(false)
+                          }}
+                        />
+                      </div>
+                    )}
+                  </div>
                   <button
                     type="button"
                     className="gen-step-icon-btn gen-step-add-btn gen-own-add-btn"
