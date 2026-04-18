@@ -1100,6 +1100,7 @@ function App() {
         suggested: true,
         recommendedDate: item.recommendedDate,
         recommendedOffsetDays: item.recommendedOffsetDays,
+        forceRecommendedDate: Boolean(item.userPickedDate),
       })
       const updatedGoal = {
         ...goal,
@@ -1251,6 +1252,26 @@ function App() {
           : step
       )
     )
+    closeGeneratedDateEditor()
+  }
+
+  function updateRecommendationDate(itemId, nextDate) {
+    const normalizedDate = normalizeIsoDate(nextDate)
+    if (!normalizedDate) return
+
+    setRecommendations(prev => {
+      const nextRecommendations = prev.map(item =>
+        item.id === itemId
+          ? {
+              ...item,
+              recommendedDate: normalizedDate,
+              userPickedDate: true,
+            }
+          : item
+      )
+      storeRecommendationsInCache(activeGoal, recommendationsSource, nextRecommendations)
+      return nextRecommendations
+    })
     closeGeneratedDateEditor()
   }
 
@@ -1925,15 +1946,35 @@ function App() {
                         style={item.instantEnter ? undefined : { '--appear-i': index }}
                       >
                         <div className="recommendation-icon">{item.icon}</div>
-                        {item.recommendedDate && (
-                          <span className="checkpoint-date-chip">
-                            до {formatRecommendedDate(item.recommendedDate)}
-                          </span>
-                        )}
                         <p>{item.text}</p>
-                        <button type="button" onClick={() => addRecommendationToActiveGoal(item)}>
-                          ➕
-                        </button>
+                        <div className="recommendation-card-actions">
+                          <span className="recommendation-date-label">
+                            {item.recommendedDate ? `до ${formatRecommendedDate(item.recommendedDate)}` : 'Без даты'}
+                          </span>
+                          <div className="recommendation-card-buttons">
+                            <button
+                              type="button"
+                              className={`gen-step-icon-btn gen-step-calendar-btn ${generatedDateEditor?.mode === 'recommendation' && generatedDateEditor?.recommendationId === item.id ? 'gen-step-calendar-btn--active' : ''} ${item.userPickedDate ? 'gen-step-calendar-btn--selected' : ''}`}
+                              aria-label="Выбрать дату"
+                              onClick={() =>
+                                openGeneratedDateEditor('recommendation', {
+                                  recommendationId: item.id,
+                                  value: normalizeIsoDate(item.recommendedDate),
+                                })
+                              }
+                            >
+                              <CalendarGlyph />
+                            </button>
+                            <button
+                              type="button"
+                              className="gen-step-icon-btn gen-step-add-btn"
+                              aria-label="Добавить в повестку"
+                              onClick={() => addRecommendationToActiveGoal(item)}
+                            >
+                              +
+                            </button>
+                          </div>
+                        </div>
                       </article>
                     )
                   )
@@ -2147,6 +2188,8 @@ function App() {
                 onChange={e => {
                   if (generatedDateEditor.mode === 'generated') {
                     updateGeneratedStepDate(generatedDateEditor.stepId, e.target.value)
+                  } else if (generatedDateEditor.mode === 'recommendation') {
+                    updateRecommendationDate(generatedDateEditor.recommendationId, e.target.value)
                   } else {
                     updateOwnGeneratedDate(e.target.value)
                   }
