@@ -1948,9 +1948,6 @@ function App() {
                         <div className="recommendation-icon">{item.icon}</div>
                         <p>{item.text}</p>
                         <div className="recommendation-card-actions">
-                          <span className="recommendation-date-label">
-                            {item.recommendedDate ? `до ${formatRecommendedDate(item.recommendedDate)}` : 'Без даты'}
-                          </span>
                           <div className="recommendation-card-buttons">
                             <button
                               type="button"
