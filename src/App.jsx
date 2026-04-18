@@ -642,6 +642,16 @@ function App() {
     return [...list].filter(t => !t.completed).sort(compareMicroGoalsByCheckpoint)
   }, [activeGoal])
 
+  const agendaRecommendations = useMemo(() => {
+    if (!activeGoal?.text) return []
+
+    const activeGoalText = normalizeTaskText(activeGoal.text)
+    const sourceText = normalizeTaskText(recommendationsSource)
+    if (!sourceText || sourceText !== activeGoalText) return []
+
+    return Array.isArray(recommendations) ? recommendations : []
+  }, [activeGoal?.id, activeGoal?.text, recommendations, recommendationsSource])
+
   function switchActiveGoal(delta) {
     if (safeGoals.length <= 1) return
     const idx = safeGoals.findIndex(g => g.id === activeGoalId)
@@ -1051,6 +1061,12 @@ function App() {
   }, [activeGoal, recommendationsCache, storeRecommendationsInCache])
 
   useEffect(() => {
+    if (!activeGoal) {
+      setRecommendations([])
+      setRecommendationsSource('')
+      return
+    }
+
     if (activeTab === 'agenda' && activeGoal?.text) {
       requestPreviewSuggestions(activeGoal.text)
     }
@@ -1887,14 +1903,14 @@ function App() {
                 <p className="secondary-text section-subline">под цель «{activeGoal.text}»</p>
               )}
               <div className="recommendations-row">
-                {recommendations.length === 0 ? (
+                {agendaRecommendations.length === 0 ? (
                   <p className="secondary-text">
                     {!activeGoal
                       ? 'Добавьте цель — здесь появятся идеи ИИ именно для неё'
                       : 'Пока нет рекомендаций ИИ для этой цели. Смените цель — подгрузим идеи для другой'}
                   </p>
                 ) : (
-                  recommendations.map((item, index) =>
+                  agendaRecommendations.map((item, index) =>
                     item.placeholder ? (
                       <article
                         key={item.id}
