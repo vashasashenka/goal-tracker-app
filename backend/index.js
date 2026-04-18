@@ -330,12 +330,17 @@ app.post('/api/auth/register', async (req, res) => {
     client = await pool.connect()
     await client.query('BEGIN')
 
+    const existingUser = await client.query('SELECT id FROM users WHERE email = $1 LIMIT 1', [email])
+    if (existingUser.rows.length > 0) {
+      await client.query('ROLLBACK')
+      return res.status(409).json({ error: 'Аккаунт с такой почтой уже существует' })
+    }
+
     const passwordHash = await hashPassword(password)
     const createdUser = await client.query(
       `
         INSERT INTO users (email, name, password_hash)
         VALUES ($1, $2, $3)
-        ON CONFLICT (email) DO NOTHING
         RETURNING id, name, email
       `,
       [email, name, passwordHash]
@@ -343,7 +348,7 @@ app.post('/api/auth/register', async (req, res) => {
 
     if (createdUser.rows.length === 0) {
       await client.query('ROLLBACK')
-      return res.status(409).json({ error: 'Аккаунт с такой почтой уже существует' })
+      return res.status(500).json({ error: 'Не удалось создать аккаунт' })
     }
 
     const user = createdUser.rows[0]
@@ -360,6 +365,9 @@ app.post('/api/auth/register', async (req, res) => {
     res.status(201).json(buildAuthResponse(user, sessionToken))
   } catch (error) {
     if (client) await client.query('ROLLBACK').catch(() => {})
+    if (error?.code === '23505') {
+      return res.status(409).json({ error: 'Аккаунт с такой почтой уже существует' })
+    }
     console.error('Ошибка регистрации:', error)
     res.status(500).json({ error: 'Не удалось создать аккаунт' })
   } finally {
