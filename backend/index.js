@@ -3,10 +3,14 @@ import cors from 'cors'
 import dotenv from 'dotenv'
 import pg from 'pg'
 import OpenAI from 'openai'
+import { randomBytes, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto'
+import { promisify } from 'node:util'
 
 dotenv.config()
 
 const { Pool } = pg
+const scrypt = promisify(scryptCallback)
+const MIN_PASSWORD_LENGTH = 8
 
 const app = express()
 const PORT = Number(process.env.PORT) || 5001
@@ -37,8 +41,25 @@ const yandex = new OpenAI({
 })
 
 async function ensureSchema() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id BIGSERIAL PRIMARY KEY,
+      email TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_sessions (
+      token TEXT PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `)
   await pool.query('ALTER TABLE goals ADD COLUMN IF NOT EXISTS owner_key TEXT')
   await pool.query('ALTER TABLE completed_goals ADD COLUMN IF NOT EXISTS owner_key TEXT')
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_user_sessions_user_id ON user_sessions(user_id)')
   await pool.query('CREATE INDEX IF NOT EXISTS idx_goals_owner_key ON goals(owner_key)')
   await pool.query(
     'CREATE INDEX IF NOT EXISTS idx_completed_goals_owner_key ON completed_goals(owner_key)'
@@ -50,15 +71,108 @@ const schemaReady = ensureSchema().catch(error => {
   throw error
 })
 
-function getUserKey(req) {
-  const raw = String(req.get('x-user-key') || '').trim()
-  return raw || null
+function normalizeEmail(email) {
+  return String(email || '').trim().toLowerCase()
 }
 
-function requireUserKey(req, res) {
-  const userKey = getUserKey(req)
-  if (userKey) return userKey
-  res.status(400).json({ error: 'Не удалось определить пользователя' })
+function isValidEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmail(email))
+}
+
+function isValidPassword(password) {
+  return String(password || '').length >= MIN_PASSWORD_LENGTH
+}
+
+function ownerKeyForUserId(userId) {
+  return `user:${userId}`
+}
+
+function getSessionToken(req) {
+  const headerToken = String(req.get('x-session-token') || '').trim()
+  if (headerToken) return headerToken
+
+  const authHeader = String(req.get('authorization') || '').trim()
+  if (/^bearer\s+/i.test(authHeader)) {
+    return authHeader.replace(/^bearer\s+/i, '').trim() || null
+  }
+
+  return null
+}
+
+async function hashPassword(password) {
+  const salt = randomBytes(16).toString('hex')
+  const derivedKey = await scrypt(String(password || ''), salt, 64)
+  return `${salt}:${Buffer.from(derivedKey).toString('hex')}`
+}
+
+async function verifyPassword(password, storedHash) {
+  const [salt, hashed] = String(storedHash || '').split(':')
+  if (!salt || !hashed) return false
+
+  const storedBuffer = Buffer.from(hashed, 'hex')
+  const derivedKey = Buffer.from(await scrypt(String(password || ''), salt, storedBuffer.length))
+  if (storedBuffer.length !== derivedKey.length) return false
+
+  return timingSafeEqual(storedBuffer, derivedKey)
+}
+
+function createSessionToken() {
+  return randomBytes(32).toString('hex')
+}
+
+function buildAuthResponse(user, sessionToken) {
+  return {
+    sessionToken,
+    user: {
+      name: String(user?.name || '').trim(),
+      email: normalizeEmail(user?.email),
+    },
+  }
+}
+
+async function migrateLegacyOwnerKey(client, email, ownerKey) {
+  const legacyKey = normalizeEmail(email)
+  if (!legacyKey || !ownerKey) return
+
+  await client.query('UPDATE goals SET owner_key = $1 WHERE owner_key = $2', [ownerKey, legacyKey])
+  await client.query('UPDATE completed_goals SET owner_key = $1 WHERE owner_key = $2', [
+    ownerKey,
+    legacyKey,
+  ])
+}
+
+async function resolveAuth(req) {
+  const sessionToken = getSessionToken(req)
+  if (!sessionToken) return null
+
+  const result = await pool.query(
+    `
+      SELECT u.id, u.name, u.email
+      FROM user_sessions s
+      JOIN users u ON u.id = s.user_id
+      WHERE s.token = $1
+      LIMIT 1
+    `,
+    [sessionToken]
+  )
+
+  if (result.rows.length === 0) return null
+
+  const row = result.rows[0]
+  return {
+    sessionToken,
+    userId: Number(row.id),
+    name: String(row.name || '').trim(),
+    email: normalizeEmail(row.email),
+    ownerKey: ownerKeyForUserId(row.id),
+  }
+}
+
+async function requireAuth(req, res) {
+  const auth = await resolveAuth(req)
+  if (auth) return auth
+
+  res.status(401).json({ error: 'Нужно войти в аккаунт' })
   return null
 }
 
@@ -191,13 +305,158 @@ app.get('/', (req, res) => {
   res.send('Goal Tracker API is running')
 })
 
+app.post('/api/auth/register', async (req, res) => {
+  const name = String(req.body?.name || '').trim()
+  const email = normalizeEmail(req.body?.email)
+  const password = String(req.body?.password || '')
+
+  if (!name) {
+    return res.status(400).json({ error: 'Имя обязательно' })
+  }
+  if (!isValidEmail(email)) {
+    return res.status(400).json({ error: 'Введите корректную почту' })
+  }
+  if (!isValidPassword(password)) {
+    return res
+      .status(400)
+      .json({ error: `Пароль должен быть не короче ${MIN_PASSWORD_LENGTH} символов` })
+  }
+
+  let client
+  try {
+    await schemaReady
+    client = await pool.connect()
+    await client.query('BEGIN')
+
+    const passwordHash = await hashPassword(password)
+    const createdUser = await client.query(
+      `
+        INSERT INTO users (email, name, password_hash)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (email) DO NOTHING
+        RETURNING id, name, email
+      `,
+      [email, name, passwordHash]
+    )
+
+    if (createdUser.rows.length === 0) {
+      await client.query('ROLLBACK')
+      return res.status(409).json({ error: 'Аккаунт с такой почтой уже существует' })
+    }
+
+    const user = createdUser.rows[0]
+    const ownerKey = ownerKeyForUserId(user.id)
+    await migrateLegacyOwnerKey(client, email, ownerKey)
+
+    const sessionToken = createSessionToken()
+    await client.query('INSERT INTO user_sessions (token, user_id) VALUES ($1, $2)', [
+      sessionToken,
+      user.id,
+    ])
+
+    await client.query('COMMIT')
+    res.status(201).json(buildAuthResponse(user, sessionToken))
+  } catch (error) {
+    if (client) await client.query('ROLLBACK').catch(() => {})
+    console.error('Ошибка регистрации:', error)
+    res.status(500).json({ error: 'Не удалось создать аккаунт' })
+  } finally {
+    client?.release()
+  }
+})
+
+app.post('/api/auth/login', async (req, res) => {
+  const email = normalizeEmail(req.body?.email)
+  const password = String(req.body?.password || '')
+
+  if (!isValidEmail(email)) {
+    return res.status(400).json({ error: 'Введите корректную почту' })
+  }
+  if (!password) {
+    return res.status(400).json({ error: 'Введите пароль' })
+  }
+
+  let client
+  try {
+    await schemaReady
+    client = await pool.connect()
+    await client.query('BEGIN')
+
+    const userResult = await client.query(
+      'SELECT id, name, email, password_hash FROM users WHERE email = $1 LIMIT 1',
+      [email]
+    )
+
+    if (userResult.rows.length === 0) {
+      await client.query('ROLLBACK')
+      return res.status(401).json({ error: 'Неверная почта или пароль' })
+    }
+
+    const user = userResult.rows[0]
+    const passwordOk = await verifyPassword(password, user.password_hash)
+    if (!passwordOk) {
+      await client.query('ROLLBACK')
+      return res.status(401).json({ error: 'Неверная почта или пароль' })
+    }
+
+    await migrateLegacyOwnerKey(client, email, ownerKeyForUserId(user.id))
+
+    const sessionToken = createSessionToken()
+    await client.query('INSERT INTO user_sessions (token, user_id) VALUES ($1, $2)', [
+      sessionToken,
+      user.id,
+    ])
+
+    await client.query('COMMIT')
+    res.json(buildAuthResponse(user, sessionToken))
+  } catch (error) {
+    if (client) await client.query('ROLLBACK').catch(() => {})
+    console.error('Ошибка входа:', error)
+    res.status(500).json({ error: 'Не удалось выполнить вход' })
+  } finally {
+    client?.release()
+  }
+})
+
+app.get('/api/auth/me', async (req, res) => {
+  try {
+    await schemaReady
+    const auth = await requireAuth(req, res)
+    if (!auth) return
+
+    res.json({
+      user: {
+        name: auth.name,
+        email: auth.email,
+      },
+    })
+  } catch (error) {
+    console.error('Ошибка получения профиля:', error)
+    res.status(500).json({ error: 'Ошибка сервера' })
+  }
+})
+
+app.post('/api/auth/logout', async (req, res) => {
+  try {
+    await schemaReady
+    const sessionToken = getSessionToken(req)
+    if (sessionToken) {
+      await pool.query('DELETE FROM user_sessions WHERE token = $1', [sessionToken])
+    }
+    res.status(204).end()
+  } catch (error) {
+    console.error('Ошибка выхода:', error)
+    res.status(500).json({ error: 'Ошибка сервера' })
+  }
+})
+
 app.get('/api/goals', async (req, res) => {
   try {
     await schemaReady
-    const userKey = requireUserKey(req, res)
-    if (!userKey) return
+    const auth = await requireAuth(req, res)
+    if (!auth) return
     const result = await pool.query('SELECT * FROM goals WHERE owner_key = $1 ORDER BY id DESC', [
-      userKey,
+      auth.ownerKey,
     ])
 
     res.json(
@@ -216,11 +475,11 @@ app.get('/api/goals', async (req, res) => {
 app.get('/api/completed-goals', async (req, res) => {
   try {
     await schemaReady
-    const userKey = requireUserKey(req, res)
-    if (!userKey) return
+    const auth = await requireAuth(req, res)
+    if (!auth) return
     const result = await pool.query(
       'SELECT * FROM completed_goals WHERE owner_key = $1 ORDER BY finished_at DESC NULLS LAST',
-      [userKey]
+      [auth.ownerKey]
     )
 
     res.json(
@@ -271,43 +530,43 @@ app.post('/api/preview-microgoals', async (req, res) => {
 })
 app.post('/api/goals', async (req, res) => {
   const { text, microGoals: rawMicroGoals } = req.body
-  const userKey = requireUserKey(req, res)
-  if (!userKey) return
 
   if (!text || !text.trim()) {
     return res.status(400).json({ error: 'Текст цели обязателен' })
   }
 
   let microGoals
-  if (Array.isArray(rawMicroGoals)) {
-    microGoals = rawMicroGoals
-  } else {
-    if (yandexMisconfigured(res)) return
-
-    let generated
-    try {
-      generated = await generateMicroGoals(text, [], 3)
-    } catch (error) {
-      console.error('Ошибка создания цели (ИИ):', error)
-      return res.status(500).json({ error: mapAiError(error) })
-    }
-
-    microGoals = generated.map((t, i) => ({
-      id: Date.now() + i,
-      text: t,
-      completed: false,
-      suggested: true,
-      ...makeCheckpointHint(i + 1),
-    }))
-  }
-
-  const id = Date.now()
-
   try {
     await schemaReady
+    const auth = await requireAuth(req, res)
+    if (!auth) return
+
+    if (Array.isArray(rawMicroGoals)) {
+      microGoals = rawMicroGoals
+    } else {
+      if (yandexMisconfigured(res)) return
+
+      let generated
+      try {
+        generated = await generateMicroGoals(text, [], 3)
+      } catch (error) {
+        console.error('Ошибка создания цели (ИИ):', error)
+        return res.status(500).json({ error: mapAiError(error) })
+      }
+
+      microGoals = generated.map((t, i) => ({
+        id: Date.now() + i,
+        text: t,
+        completed: false,
+        suggested: true,
+        ...makeCheckpointHint(i + 1),
+      }))
+    }
+
+    const id = Date.now()
     await pool.query(
       'INSERT INTO goals (id, text, micro_goals, owner_key) VALUES ($1, $2, $3, $4)',
-      [id, text, JSON.stringify(microGoals), userKey]
+      [id, text, JSON.stringify(microGoals), auth.ownerKey]
     )
 
     res.status(201).json({
@@ -323,16 +582,16 @@ app.post('/api/goals', async (req, res) => {
 
 app.post('/api/goals/:id/generate-one', async (req, res) => {
   const goalId = Number(req.params.id)
-  const userKey = requireUserKey(req, res)
-  if (!userKey) return
 
   if (yandexMisconfigured(res)) return
 
   try {
     await schemaReady
+    const auth = await requireAuth(req, res)
+    if (!auth) return
     const result = await pool.query('SELECT * FROM goals WHERE id = $1 AND owner_key = $2', [
       goalId,
-      userKey,
+      auth.ownerKey,
     ])
 
     if (result.rows.length === 0) {
@@ -363,14 +622,14 @@ app.post('/api/goals/:id/generate-one', async (req, res) => {
 app.put('/api/goals/:id', async (req, res) => {
   const goalId = Number(req.params.id)
   const { text, microGoals } = req.body
-  const userKey = requireUserKey(req, res)
-  if (!userKey) return
 
   try {
     await schemaReady
+    const auth = await requireAuth(req, res)
+    if (!auth) return
     const result = await pool.query(
       'UPDATE goals SET text = $1, micro_goals = $2 WHERE id = $3 AND owner_key = $4 RETURNING *',
-      [text, JSON.stringify(microGoals), goalId, userKey]
+      [text, JSON.stringify(microGoals), goalId, auth.ownerKey]
     )
 
     if (result.rows.length === 0) {
@@ -393,9 +652,9 @@ app.put('/api/goals/:id', async (req, res) => {
 app.delete('/api/goals', async (req, res) => {
   try {
     await schemaReady
-    const userKey = requireUserKey(req, res)
-    if (!userKey) return
-    await pool.query('DELETE FROM goals WHERE owner_key = $1', [userKey])
+    const auth = await requireAuth(req, res)
+    if (!auth) return
+    await pool.query('DELETE FROM goals WHERE owner_key = $1', [auth.ownerKey])
     res.json({ message: 'Все активные цели удалены' })
   } catch (error) {
     console.error('Ошибка удаления целей:', error)
@@ -408,9 +667,9 @@ app.delete('/api/goals/:id', async (req, res) => {
 
   try {
     await schemaReady
-    const userKey = requireUserKey(req, res)
-    if (!userKey) return
-    await pool.query('DELETE FROM goals WHERE id = $1 AND owner_key = $2', [goalId, userKey])
+    const auth = await requireAuth(req, res)
+    if (!auth) return
+    await pool.query('DELETE FROM goals WHERE id = $1 AND owner_key = $2', [goalId, auth.ownerKey])
     res.json({ message: 'Цель удалена' })
   } catch (error) {
     console.error('Ошибка удаления цели:', error)
@@ -420,21 +679,21 @@ app.delete('/api/goals/:id', async (req, res) => {
 
 app.post('/api/completed-goals', async (req, res) => {
   const { id, text, microGoals, finishedAt } = req.body
-  const userKey = requireUserKey(req, res)
-  if (!userKey) return
 
   try {
     await schemaReady
+    const auth = await requireAuth(req, res)
+    if (!auth) return
     await pool.query(
       `
       INSERT INTO completed_goals (id, text, micro_goals, finished_at, owner_key)
       VALUES ($1, $2, $3, $4, $5)
       ON CONFLICT (id) DO NOTHING
       `,
-      [id, text, JSON.stringify(microGoals), finishedAt || null, userKey]
+      [id, text, JSON.stringify(microGoals), finishedAt || null, auth.ownerKey]
     )
 
-    await pool.query('DELETE FROM goals WHERE id = $1 AND owner_key = $2', [id, userKey])
+    await pool.query('DELETE FROM goals WHERE id = $1 AND owner_key = $2', [id, auth.ownerKey])
 
     res.status(201).json({
       id,
@@ -451,9 +710,9 @@ app.post('/api/completed-goals', async (req, res) => {
 app.delete('/api/completed-goals', async (req, res) => {
   try {
     await schemaReady
-    const userKey = requireUserKey(req, res)
-    if (!userKey) return
-    await pool.query('DELETE FROM completed_goals WHERE owner_key = $1', [userKey])
+    const auth = await requireAuth(req, res)
+    if (!auth) return
+    await pool.query('DELETE FROM completed_goals WHERE owner_key = $1', [auth.ownerKey])
     res.json({ message: 'История очищена' })
   } catch (error) {
     console.error('Ошибка очистки истории:', error)

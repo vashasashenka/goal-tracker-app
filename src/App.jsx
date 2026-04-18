@@ -33,6 +33,7 @@ const COMPLETED_GOALS_KEY = 'goal_tracker_completed_goals'
 const PROFILE_ID_KEY = 'goal_tracker_profile_id'
 const USER_NAME_KEY = 'goal_tracker_user_name'
 const USER_EMAIL_KEY = 'goal_tracker_user_email'
+const AUTH_TOKEN_KEY = 'goal_tracker_auth_token'
 
 /** Сколько подсказок ИИ держим на экране (после добавления одной — дозаполняем до этого числа). */
 const AI_SUGGEST_SLOTS = 3
@@ -46,13 +47,13 @@ function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmail(email))
 }
 
-async function apiRequest(path, { method = 'GET', body, userKey } = {}) {
+async function apiRequest(path, { method = 'GET', body, sessionToken } = {}) {
   const headers = {}
   if (body !== undefined) {
     headers['Content-Type'] = 'application/json'
   }
-  if (userKey) {
-    headers['x-user-key'] = userKey
+  if (sessionToken) {
+    headers['x-session-token'] = sessionToken
   }
 
   const response = await fetch(`${API_URL}${path}`, {
@@ -368,14 +369,15 @@ function textSimilarity(a, b) {
 function App() {
   const initialUserName = String(localStorage.getItem(USER_NAME_KEY) || '').trim()
   const initialUserEmail = normalizeEmail(localStorage.getItem(USER_EMAIL_KEY) || '')
+  const initialAuthToken = String(localStorage.getItem(AUTH_TOKEN_KEY) || '').trim()
   const initialProfileId = ensureProfileId()
-  const initialUserKey = initialUserEmail || initialProfileId
-  const [goals, setGoals] = useState(() => readScopedGoalList(GOALS_KEY, initialUserKey))
+  const initialStorageScope = initialUserEmail || initialProfileId
+  const [goals, setGoals] = useState(() => readScopedGoalList(GOALS_KEY, initialStorageScope))
   const [completedGoals, setCompletedGoals] = useState(() =>
-    readScopedGoalList(COMPLETED_GOALS_KEY, initialUserKey)
+    readScopedGoalList(COMPLETED_GOALS_KEY, initialStorageScope)
   )
   const [activeGoalId, setActiveGoalId] = useState(() => {
-    const raw = localStorage.getItem(makeScopedStorageKey(ACTIVE_GOAL_KEY, initialUserKey))
+    const raw = localStorage.getItem(makeScopedStorageKey(ACTIVE_GOAL_KEY, initialStorageScope))
     if (!raw || raw === 'undefined' || raw === 'null') return null
     const n = Number(raw)
     return Number.isFinite(n) ? n : null
@@ -393,6 +395,13 @@ function App() {
   const [userEmail, setUserEmail] = useState(() => initialUserEmail)
   const [nameDraft, setNameDraft] = useState(() => initialUserName)
   const [emailDraft, setEmailDraft] = useState(() => initialUserEmail)
+  const [authToken, setAuthToken] = useState(() => initialAuthToken)
+  const [authMode, setAuthMode] = useState('login')
+  const [passwordDraft, setPasswordDraft] = useState('')
+  const [passwordRepeatDraft, setPasswordRepeatDraft] = useState('')
+  const [authBusy, setAuthBusy] = useState(false)
+  const [authChecked, setAuthChecked] = useState(() => !initialAuthToken)
+  const [authError, setAuthError] = useState('')
 
   const [generationInput, setGenerationInput] = useState('')
   const [generatedSteps, setGeneratedSteps] = useState([])
@@ -412,16 +421,28 @@ function App() {
   const generatedDateInputRef = useRef(null)
 
   const normalizedUserEmail = normalizeEmail(userEmail)
-  const userKey = normalizedUserEmail || initialProfileId
-  const hasAccountAccess = Boolean(normalizedUserEmail)
-  const hasIdentity = Boolean(String(userName || '').trim()) && isValidEmail(normalizedUserEmail)
-  const canSubmitIdentity =
-    Boolean(String(nameDraft || '').trim()) && isValidEmail(normalizeEmail(emailDraft))
-  const activeGoalStorageKey = useMemo(() => makeScopedStorageKey(ACTIVE_GOAL_KEY, userKey), [userKey])
-  const goalsStorageKey = useMemo(() => makeScopedStorageKey(GOALS_KEY, userKey), [userKey])
+  const sessionToken = String(authToken || '').trim()
+  const storageScope = normalizedUserEmail || initialProfileId
+  const hasAccountAccess = Boolean(sessionToken)
+  const isAuthenticated =
+    authChecked &&
+    Boolean(sessionToken) &&
+    Boolean(String(userName || '').trim()) &&
+    isValidEmail(normalizedUserEmail)
+  const canSubmitLogin = isValidEmail(emailDraft) && String(passwordDraft || '').length >= 8
+  const canSubmitRegister =
+    Boolean(String(nameDraft || '').trim()) &&
+    isValidEmail(emailDraft) &&
+    String(passwordDraft || '').length >= 8 &&
+    passwordDraft === passwordRepeatDraft
+  const activeGoalStorageKey = useMemo(
+    () => makeScopedStorageKey(ACTIVE_GOAL_KEY, storageScope),
+    [storageScope]
+  )
+  const goalsStorageKey = useMemo(() => makeScopedStorageKey(GOALS_KEY, storageScope), [storageScope])
   const completedGoalsStorageKey = useMemo(
-    () => makeScopedStorageKey(COMPLETED_GOALS_KEY, userKey),
-    [userKey]
+    () => makeScopedStorageKey(COMPLETED_GOALS_KEY, storageScope),
+    [storageScope]
   )
 
   function resetGenerationUi() {
@@ -473,15 +494,70 @@ function App() {
   }, [normalizedUserEmail])
 
   useEffect(() => {
-    const rawActiveGoalId = localStorage.getItem(makeScopedStorageKey(ACTIVE_GOAL_KEY, userKey))
+    if (sessionToken) localStorage.setItem(AUTH_TOKEN_KEY, sessionToken)
+    else localStorage.removeItem(AUTH_TOKEN_KEY)
+  }, [sessionToken])
+
+  useEffect(() => {
+    let cancelled = false
+
+    if (!sessionToken) {
+      setAuthChecked(true)
+      return undefined
+    }
+
+    setAuthChecked(false)
+    async function loadCurrentUser() {
+      try {
+        const payload = await apiRequest('/api/auth/me', { sessionToken })
+        if (cancelled) return
+
+        const nextName = String(payload?.user?.name || '').trim()
+        const nextEmail = normalizeEmail(payload?.user?.email)
+        if (!nextName || !isValidEmail(nextEmail)) {
+          throw new Error('bad-session')
+        }
+
+        setUserName(nextName)
+        setUserEmail(nextEmail)
+        setNameDraft(nextName)
+        setEmailDraft(nextEmail)
+        setAuthError('')
+      } catch (error) {
+        if (cancelled) return
+        console.error('Проверка сессии:', error)
+        localStorage.removeItem(AUTH_TOKEN_KEY)
+        localStorage.removeItem(USER_NAME_KEY)
+        localStorage.removeItem(USER_EMAIL_KEY)
+        setAuthToken('')
+        setUserName('')
+        setUserEmail('')
+        setNameDraft('')
+        setEmailDraft('')
+        setAuthError('Сессия истекла. Войдите снова.')
+      } finally {
+        if (!cancelled) {
+          setAuthChecked(true)
+        }
+      }
+    }
+
+    loadCurrentUser()
+    return () => {
+      cancelled = true
+    }
+  }, [sessionToken])
+
+  useEffect(() => {
+    const rawActiveGoalId = localStorage.getItem(makeScopedStorageKey(ACTIVE_GOAL_KEY, storageScope))
     if (!rawActiveGoalId || rawActiveGoalId === 'undefined' || rawActiveGoalId === 'null') {
       setActiveGoalId(null)
     } else {
       const nextActiveGoalId = Number(rawActiveGoalId)
       setActiveGoalId(Number.isFinite(nextActiveGoalId) ? nextActiveGoalId : null)
     }
-    setGoals(readScopedGoalList(GOALS_KEY, userKey))
-    setCompletedGoals(readScopedGoalList(COMPLETED_GOALS_KEY, userKey))
+    setGoals(readScopedGoalList(GOALS_KEY, storageScope))
+    setCompletedGoals(readScopedGoalList(COMPLETED_GOALS_KEY, storageScope))
     setRecommendations([])
     setRecommendationsSource('')
     setRecommendationsCache({})
@@ -499,17 +575,17 @@ function App() {
     setGenRowBusyId(null)
     setGeneratedDateEditor(null)
     setIsAddingOwnStep(false)
-  }, [userKey])
+  }, [storageScope])
 
   useEffect(() => {
     let cancelled = false
-    if (!hasAccountAccess) return undefined
+    if (!hasAccountAccess || !authChecked) return undefined
 
     async function loadAccountData() {
       try {
         const [remoteGoals, remoteCompletedGoals] = await Promise.all([
-          apiRequest('/api/goals', { userKey }),
-          apiRequest('/api/completed-goals', { userKey }),
+          apiRequest('/api/goals', { sessionToken }),
+          apiRequest('/api/completed-goals', { sessionToken }),
         ])
         if (cancelled) return
         setGoals(Array.isArray(remoteGoals) ? remoteGoals.map(normalizeGoal) : [])
@@ -527,7 +603,7 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [hasAccountAccess, userKey])
+  }, [authChecked, hasAccountAccess, sessionToken])
 
   useEffect(() => {
     localStorage.setItem(goalsStorageKey, JSON.stringify(goals))
@@ -802,7 +878,7 @@ function App() {
           text: normalizedGoal.text,
           microGoals: normalizedGoal.microGoals,
         },
-        userKey,
+        sessionToken,
       })
     )
   }
@@ -819,7 +895,7 @@ function App() {
               text: goalText,
               microGoals: [],
             },
-            userKey,
+            sessionToken,
           })
         )
       : normalizeGoal({
@@ -853,7 +929,7 @@ function App() {
           await apiRequest('/api/completed-goals', {
             method: 'POST',
             body: finishedGoal,
-            userKey,
+            sessionToken,
           })
         )
         setGoals(prev => prev.filter(item => item.id !== goalId))
@@ -1354,8 +1430,8 @@ function App() {
     try {
       if (hasAccountAccess) {
         await Promise.all([
-          apiRequest('/api/goals', { method: 'DELETE', userKey }),
-          apiRequest('/api/completed-goals', { method: 'DELETE', userKey }),
+          apiRequest('/api/goals', { method: 'DELETE', sessionToken }),
+          apiRequest('/api/completed-goals', { method: 'DELETE', sessionToken }),
         ])
       }
       setCompletedGoals([])
@@ -1371,33 +1447,112 @@ function App() {
     }
   }
 
-  function saveUserIdentity() {
-    const name = String(nameDraft || '').trim()
-    const email = normalizeEmail(emailDraft)
-    if (!name || !isValidEmail(email)) return
-    setUserName(name)
-    setUserEmail(email)
-    setNameDraft(name)
-    setEmailDraft(email)
+  function applyAuthPayload(payload) {
+    const nextToken = String(payload?.sessionToken || '').trim()
+    const nextName = String(payload?.user?.name || '').trim()
+    const nextEmail = normalizeEmail(payload?.user?.email)
+
+    if (!nextToken || !nextName || !isValidEmail(nextEmail)) {
+      throw new Error('bad-auth-payload')
+    }
+
+    setAuthToken(nextToken)
+    setUserName(nextName)
+    setUserEmail(nextEmail)
+    setNameDraft(nextName)
+    setEmailDraft(nextEmail)
+    setPasswordDraft('')
+    setPasswordRepeatDraft('')
+    setAuthMode('login')
+    setAuthError('')
     setAiError('')
+    setAuthChecked(true)
   }
 
-  function logoutUser() {
-    localStorage.removeItem(USER_NAME_KEY)
-    localStorage.removeItem(USER_EMAIL_KEY)
-    setUserName('')
-    setUserEmail('')
-    setNameDraft('')
-    setEmailDraft('')
-    setShowProfile(false)
-    setActiveTab('agenda')
-    setAiError('')
-    setRecommendations([])
-    setRecommendationsSource('')
-    setRecommendationsCache({})
-    setExpandedHistoryId(null)
-    closeTaskEditor()
-    resetGenerationUi()
+  async function submitLogin() {
+    const email = normalizeEmail(emailDraft)
+    const password = String(passwordDraft || '')
+    if (!isValidEmail(email) || !password) return
+
+    setAuthBusy(true)
+    setAuthError('')
+    try {
+      const payload = await apiRequest('/api/auth/login', {
+        method: 'POST',
+        body: {
+          email,
+          password,
+        },
+      })
+      applyAuthPayload(payload)
+    } catch (error) {
+      console.error('Вход:', error)
+      setAuthError(error?.message || 'Не удалось войти')
+    } finally {
+      setAuthBusy(false)
+    }
+  }
+
+  async function submitRegister() {
+    const name = String(nameDraft || '').trim()
+    const email = normalizeEmail(emailDraft)
+    const password = String(passwordDraft || '')
+    const passwordRepeat = String(passwordRepeatDraft || '')
+
+    if (!name || !isValidEmail(email) || !password || password !== passwordRepeat) return
+
+    setAuthBusy(true)
+    setAuthError('')
+    try {
+      const payload = await apiRequest('/api/auth/register', {
+        method: 'POST',
+        body: {
+          name,
+          email,
+          password,
+        },
+      })
+      applyAuthPayload(payload)
+    } catch (error) {
+      console.error('Регистрация:', error)
+      setAuthError(error?.message || 'Не удалось создать аккаунт')
+    } finally {
+      setAuthBusy(false)
+    }
+  }
+
+  async function logoutUser() {
+    try {
+      if (sessionToken) {
+        await apiRequest('/api/auth/logout', {
+          method: 'POST',
+          sessionToken,
+        })
+      }
+    } catch (error) {
+      console.error('Выход из аккаунта:', error)
+    } finally {
+      localStorage.removeItem(AUTH_TOKEN_KEY)
+      localStorage.removeItem(USER_NAME_KEY)
+      localStorage.removeItem(USER_EMAIL_KEY)
+      setAuthToken('')
+      setUserName('')
+      setUserEmail('')
+      setNameDraft('')
+      setEmailDraft('')
+      setPasswordDraft('')
+      setPasswordRepeatDraft('')
+      setShowProfile(false)
+      setActiveTab('agenda')
+      setAiError('')
+      setAuthError('')
+      setRecommendations([])
+      setRecommendationsSource('')
+      setRecommendationsCache({})
+      setExpandedHistoryId(null)
+      closeTaskEditor()
+      resetGenerationUi()
+    }
   }
 
   const today = new Date().toLocaleDateString('ru-RU', {
@@ -1406,16 +1561,75 @@ function App() {
     month: 'long',
   })
 
-  if (!hasIdentity) {
+  if (!authChecked) {
     return (
       <main className="app-shell onboarding-shell">
         <section className="onboarding-card">
           <div className="logo-badge">✦</div>
-          <h1 className="screen-title">Вход в аккаунт</h1>
+          <h1 className="screen-title">Проверяем вход…</h1>
+          <p className="secondary-text onboarding-copy">Секунду, открываем ваш аккаунт.</p>
+        </section>
+      </main>
+    )
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <main className="app-shell onboarding-shell">
+        <section className="onboarding-card">
+          <div className="logo-badge">✦</div>
+          <div className="auth-switcher">
+            <button
+              type="button"
+              className={`auth-switcher-button ${authMode === 'login' ? 'auth-switcher-button--active' : ''}`}
+              onClick={() => {
+                setAuthMode('login')
+                setAuthError('')
+                setPasswordDraft('')
+                setPasswordRepeatDraft('')
+              }}
+            >
+              Войти
+            </button>
+            <button
+              type="button"
+              className={`auth-switcher-button ${authMode === 'register' ? 'auth-switcher-button--active' : ''}`}
+              onClick={() => {
+                setAuthMode('register')
+                setAuthError('')
+                setPasswordDraft('')
+                setPasswordRepeatDraft('')
+              }}
+            >
+              Зарегистрироваться
+            </button>
+          </div>
+          <h1 className="screen-title">
+            {authMode === 'register' ? 'Регистрация' : 'Вход в аккаунт'}
+          </h1>
           <p className="secondary-text onboarding-copy">
-            Введите почту, чтобы открыть свои цели на другом устройстве. Имя покажем в настройках.
+            {authMode === 'register'
+              ? 'Создайте аккаунт: имя, почта и пароль. Потом сможете входить с любого устройства.'
+              : 'Введите почту и пароль, чтобы открыть свои цели и историю.'}
           </p>
           <div className="onboarding-fields">
+            {authMode === 'register' && (
+              <input
+                type="text"
+                className="onboarding-input"
+                placeholder="Имя"
+                value={nameDraft}
+                onChange={e => setNameDraft(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && canSubmitRegister) {
+                    e.preventDefault()
+                    submitRegister()
+                  }
+                }}
+                autoFocus
+                autoComplete="name"
+              />
+            )}
             <input
               type="email"
               className="onboarding-input"
@@ -1423,40 +1637,79 @@ function App() {
               value={emailDraft}
               onChange={e => setEmailDraft(e.target.value)}
               onKeyDown={e => {
-                if (e.key === 'Enter' && canSubmitIdentity) {
+                if (e.key === 'Enter' && (authMode === 'register' ? canSubmitRegister : canSubmitLogin)) {
                   e.preventDefault()
-                  saveUserIdentity()
+                  if (authMode === 'register') submitRegister()
+                  else submitLogin()
                 }
               }}
-              autoFocus
+              autoFocus={authMode !== 'register'}
               autoComplete="email"
               inputMode="email"
             />
             <input
-              type="text"
+              type="password"
               className="onboarding-input"
-              placeholder="Имя"
-              value={nameDraft}
-              onChange={e => setNameDraft(e.target.value)}
+              placeholder="Пароль"
+              value={passwordDraft}
+              onChange={e => setPasswordDraft(e.target.value)}
               onKeyDown={e => {
-                if (e.key === 'Enter' && canSubmitIdentity) {
+                if (e.key === 'Enter' && (authMode === 'register' ? canSubmitRegister : canSubmitLogin)) {
                   e.preventDefault()
-                  saveUserIdentity()
+                  if (authMode === 'register') submitRegister()
+                  else submitLogin()
                 }
               }}
-              autoComplete="name"
+              autoComplete={authMode === 'register' ? 'new-password' : 'current-password'}
             />
+            {authMode === 'register' && (
+              <input
+                type="password"
+                className="onboarding-input"
+                placeholder="Повторите пароль"
+                value={passwordRepeatDraft}
+                onChange={e => setPasswordRepeatDraft(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && canSubmitRegister) {
+                    e.preventDefault()
+                    submitRegister()
+                  }
+                }}
+                autoComplete="new-password"
+              />
+            )}
           </div>
           {String(emailDraft || '').trim() && !isValidEmail(emailDraft) && (
             <p className="onboarding-error">Введите корректную почту</p>
           )}
+          {authMode === 'register' && String(passwordDraft || '').length > 0 && String(passwordDraft || '').length < 8 && (
+            <p className="onboarding-error">Пароль должен быть не короче 8 символов</p>
+          )}
+          {authMode === 'register' &&
+            String(passwordRepeatDraft || '').length > 0 &&
+            passwordDraft !== passwordRepeatDraft && (
+              <p className="onboarding-error">Пароли не совпадают</p>
+            )}
+          {authError && <p className="onboarding-error">{authError}</p>}
           <button
             type="button"
             className="primary-button"
-            disabled={!canSubmitIdentity}
-            onClick={saveUserIdentity}
+            disabled={authBusy || (authMode === 'register' ? !canSubmitRegister : !canSubmitLogin)}
+            onClick={authMode === 'register' ? submitRegister : submitLogin}
           >
-            Войти
+            {authBusy ? 'Подождите…' : authMode === 'register' ? 'Зарегистрироваться' : 'Войти'}
+          </button>
+          <button
+            type="button"
+            className="text-button auth-toggle-link"
+            onClick={() => {
+              setAuthMode(prev => (prev === 'login' ? 'register' : 'login'))
+              setAuthError('')
+              setPasswordDraft('')
+              setPasswordRepeatDraft('')
+            }}
+          >
+            {authMode === 'register' ? 'Уже есть аккаунт? Войти' : 'Нет аккаунта? Зарегистрироваться'}
           </button>
         </section>
       </main>

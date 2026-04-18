@@ -624,6 +624,34 @@ small,
   line-height: 1.45;
 }
 
+.auth-switcher {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 18px;
+  padding: 6px;
+  border-radius: 18px;
+  background: rgba(255, 251, 245, 0.9);
+  border: 1px solid var(--divider);
+  box-shadow: var(--shadow-card);
+}
+
+.auth-switcher-button {
+  min-height: 42px;
+  border: none;
+  border-radius: 14px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.auth-switcher-button--active {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 12px 24px rgba(47, 111, 237, 0.2);
+}
+
 .onboarding-fields {
   display: grid;
   gap: 12px;
@@ -644,6 +672,13 @@ small,
   margin: 10px 0 0;
   font-size: 13px;
   color: #b42318;
+}
+
+.auth-toggle-link {
+  width: 100%;
+  margin-top: 12px;
+  text-align: center;
+  color: var(--accent);
 }
 
 .center-title {
