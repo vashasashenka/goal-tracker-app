@@ -3,8 +3,10 @@ import cors from 'cors'
 import dotenv from 'dotenv'
 import pg from 'pg'
 import OpenAI from 'openai'
+import path from 'node:path'
 import { randomBytes, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto'
 import { promisify } from 'node:util'
+import { fileURLToPath } from 'node:url'
 
 dotenv.config()
 
@@ -720,7 +722,11 @@ app.delete('/api/completed-goals', async (req, res) => {
   }
 })
 
-if (process.env.VERCEL !== '1') {
+const isDirectRun =
+  Boolean(process.argv[1]) &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+
+if (isDirectRun) {
   app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`)
   })
