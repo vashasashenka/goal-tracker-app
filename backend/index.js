@@ -270,7 +270,7 @@ app.post('/api/preview-microgoals', async (req, res) => {
   }
 })
 app.post('/api/goals', async (req, res) => {
-  const { text } = req.body
+  const { text, microGoals: rawMicroGoals } = req.body
   const userKey = requireUserKey(req, res)
   if (!userKey) return
 
@@ -278,23 +278,28 @@ app.post('/api/goals', async (req, res) => {
     return res.status(400).json({ error: 'Текст цели обязателен' })
   }
 
-  if (yandexMisconfigured(res)) return
+  let microGoals
+  if (Array.isArray(rawMicroGoals)) {
+    microGoals = rawMicroGoals
+  } else {
+    if (yandexMisconfigured(res)) return
 
-  let generated
-  try {
-    generated = await generateMicroGoals(text, [], 3)
-  } catch (error) {
-    console.error('Ошибка создания цели (ИИ):', error)
-    return res.status(500).json({ error: mapAiError(error) })
+    let generated
+    try {
+      generated = await generateMicroGoals(text, [], 3)
+    } catch (error) {
+      console.error('Ошибка создания цели (ИИ):', error)
+      return res.status(500).json({ error: mapAiError(error) })
+    }
+
+    microGoals = generated.map((t, i) => ({
+      id: Date.now() + i,
+      text: t,
+      completed: false,
+      suggested: true,
+      ...makeCheckpointHint(i + 1),
+    }))
   }
-
-  const microGoals = generated.map((t, i) => ({
-    id: Date.now() + i,
-    text: t,
-    completed: false,
-    suggested: true,
-    ...makeCheckpointHint(i + 1),
-  }))
 
   const id = Date.now()
 

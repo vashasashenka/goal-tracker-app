@@ -63,6 +63,10 @@ textarea {
   padding: 16px;
 }
 
+.onboarding-card {
+  max-width: 440px;
+}
+
 .screen {
   margin: 0 auto;
 }
@@ -556,6 +560,17 @@ small,
   gap: 8px;
 }
 
+.list-row--stacked {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.list-row-label {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
 .list-row small {
   display: block;
   margin-top: 4px;
@@ -602,6 +617,33 @@ small,
   padding: 14px;
   resize: vertical;
   box-shadow: var(--shadow-card);
+}
+
+.onboarding-copy {
+  margin: 0 0 14px;
+  line-height: 1.45;
+}
+
+.onboarding-fields {
+  display: grid;
+  gap: 12px;
+}
+
+.onboarding-input {
+  width: 100%;
+  min-height: 54px;
+  border: 1px solid var(--divider);
+  border-radius: 18px;
+  background: rgba(255, 251, 245, 0.95);
+  padding: 0 16px;
+  box-shadow: var(--shadow-card);
+  color: var(--text);
+}
+
+.onboarding-error {
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: #b42318;
 }
 
 .center-title {
@@ -1195,6 +1237,10 @@ small,
   margin: 0 0 16px;
   text-align: center;
   font-size: 15px;
+}
+
+.profile-logout-button {
+  margin-top: 16px;
 }
 
 .avatar {

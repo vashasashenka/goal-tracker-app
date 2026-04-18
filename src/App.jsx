@@ -32,11 +32,43 @@ const GOALS_KEY = 'goal_tracker_goals'
 const COMPLETED_GOALS_KEY = 'goal_tracker_completed_goals'
 const PROFILE_ID_KEY = 'goal_tracker_profile_id'
 const USER_NAME_KEY = 'goal_tracker_user_name'
-const SETTINGS_KEY = 'goal_tracker_settings'
+const USER_EMAIL_KEY = 'goal_tracker_user_email'
 
 /** Сколько подсказок ИИ держим на экране (после добавления одной — дозаполняем до этого числа). */
 const AI_SUGGEST_SLOTS = 3
 const CHECKPOINT_GAP_DAYS = [3, 4, 7, 7, 14, 14, 21]
+
+function normalizeEmail(email) {
+  return String(email || '').trim().toLowerCase()
+}
+
+function isValidEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmail(email))
+}
+
+async function apiRequest(path, { method = 'GET', body, userKey } = {}) {
+  const headers = {}
+  if (body !== undefined) {
+    headers['Content-Type'] = 'application/json'
+  }
+  if (userKey) {
+    headers['x-user-key'] = userKey
+  }
+
+  const response = await fetch(`${API_URL}${path}`, {
+    method,
+    headers,
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  })
+
+  if (!response.ok) {
+    const msg = await parseApiErrorMessage(response)
+    throw new Error(msg || 'failed')
+  }
+
+  if (response.status === 204) return null
+  return response.json()
+}
 
 function parseIsoDate(dateStr) {
   const value = String(dateStr || '').trim()
@@ -335,13 +367,15 @@ function textSimilarity(a, b) {
 
 function App() {
   const initialUserName = String(localStorage.getItem(USER_NAME_KEY) || '').trim()
+  const initialUserEmail = normalizeEmail(localStorage.getItem(USER_EMAIL_KEY) || '')
   const initialProfileId = ensureProfileId()
-  const [goals, setGoals] = useState(() => readScopedGoalList(GOALS_KEY, initialProfileId))
+  const initialUserKey = initialUserEmail || initialProfileId
+  const [goals, setGoals] = useState(() => readScopedGoalList(GOALS_KEY, initialUserKey))
   const [completedGoals, setCompletedGoals] = useState(() =>
-    readScopedGoalList(COMPLETED_GOALS_KEY, initialProfileId)
+    readScopedGoalList(COMPLETED_GOALS_KEY, initialUserKey)
   )
   const [activeGoalId, setActiveGoalId] = useState(() => {
-    const raw = localStorage.getItem(makeScopedStorageKey(ACTIVE_GOAL_KEY, initialProfileId))
+    const raw = localStorage.getItem(makeScopedStorageKey(ACTIVE_GOAL_KEY, initialUserKey))
     if (!raw || raw === 'undefined' || raw === 'null') return null
     const n = Number(raw)
     return Number.isFinite(n) ? n : null
@@ -356,31 +390,9 @@ function App() {
   const [recommendationsSource, setRecommendationsSource] = useState('')
 
   const [userName, setUserName] = useState(() => initialUserName)
-  /** Черновик в поле имени; не смешиваем с сохранённым именем — иначе после одной буквы экран онбординга закрывается. */
-  const [nameDraft, setNameDraft] = useState('')
-  const [settings, setSettings] = useState(() => {
-    const saved = localStorage.getItem(makeScopedStorageKey(SETTINGS_KEY, initialProfileId))
-    if (!saved) {
-      return {
-        calendarAccess: true,
-        geoAccess: false,
-        analytics: true,
-        notifications: true,
-        mode: 'Стандарт',
-      }
-    }
-    try {
-      return JSON.parse(saved)
-    } catch {
-      return {
-        calendarAccess: true,
-        geoAccess: false,
-        analytics: true,
-        notifications: true,
-        mode: 'Стандарт',
-      }
-    }
-  })
+  const [userEmail, setUserEmail] = useState(() => initialUserEmail)
+  const [nameDraft, setNameDraft] = useState(() => initialUserName)
+  const [emailDraft, setEmailDraft] = useState(() => initialUserEmail)
 
   const [generationInput, setGenerationInput] = useState('')
   const [generatedSteps, setGeneratedSteps] = useState([])
@@ -399,14 +411,18 @@ function App() {
   const [recommendationsCache, setRecommendationsCache] = useState({})
   const generatedDateInputRef = useRef(null)
 
-  const userKey = initialProfileId
+  const normalizedUserEmail = normalizeEmail(userEmail)
+  const userKey = normalizedUserEmail || initialProfileId
+  const hasAccountAccess = Boolean(normalizedUserEmail)
+  const hasIdentity = Boolean(String(userName || '').trim()) && isValidEmail(normalizedUserEmail)
+  const canSubmitIdentity =
+    Boolean(String(nameDraft || '').trim()) && isValidEmail(normalizeEmail(emailDraft))
   const activeGoalStorageKey = useMemo(() => makeScopedStorageKey(ACTIVE_GOAL_KEY, userKey), [userKey])
   const goalsStorageKey = useMemo(() => makeScopedStorageKey(GOALS_KEY, userKey), [userKey])
   const completedGoalsStorageKey = useMemo(
     () => makeScopedStorageKey(COMPLETED_GOALS_KEY, userKey),
     [userKey]
   )
-  const settingsStorageKey = useMemo(() => makeScopedStorageKey(SETTINGS_KEY, userKey), [userKey])
 
   function resetGenerationUi() {
     setGenerationInput('')
@@ -436,35 +452,6 @@ function App() {
   }, [generatedDateEditor])
 
   useEffect(() => {
-    localStorage.setItem(settingsStorageKey, JSON.stringify(settings))
-  }, [settings, settingsStorageKey])
-
-  useEffect(() => {
-    const saved = localStorage.getItem(settingsStorageKey)
-    if (!saved) {
-      setSettings({
-        calendarAccess: true,
-        geoAccess: false,
-        analytics: true,
-        notifications: true,
-        mode: 'Стандарт',
-      })
-      return
-    }
-    try {
-      setSettings(JSON.parse(saved))
-    } catch {
-      setSettings({
-        calendarAccess: true,
-        geoAccess: false,
-        analytics: true,
-        notifications: true,
-        mode: 'Стандарт',
-      })
-    }
-  }, [settingsStorageKey])
-
-  useEffect(() => {
     const goOnline = () => setIsOnline(true)
     const goOffline = () => setIsOnline(false)
     window.addEventListener('online', goOnline)
@@ -476,9 +463,71 @@ function App() {
   }, [])
 
   useEffect(() => {
+    if (userName) localStorage.setItem(USER_NAME_KEY, userName)
+    else localStorage.removeItem(USER_NAME_KEY)
+  }, [userName])
+
+  useEffect(() => {
+    if (normalizedUserEmail) localStorage.setItem(USER_EMAIL_KEY, normalizedUserEmail)
+    else localStorage.removeItem(USER_EMAIL_KEY)
+  }, [normalizedUserEmail])
+
+  useEffect(() => {
+    const rawActiveGoalId = localStorage.getItem(makeScopedStorageKey(ACTIVE_GOAL_KEY, userKey))
+    if (!rawActiveGoalId || rawActiveGoalId === 'undefined' || rawActiveGoalId === 'null') {
+      setActiveGoalId(null)
+    } else {
+      const nextActiveGoalId = Number(rawActiveGoalId)
+      setActiveGoalId(Number.isFinite(nextActiveGoalId) ? nextActiveGoalId : null)
+    }
     setGoals(readScopedGoalList(GOALS_KEY, userKey))
     setCompletedGoals(readScopedGoalList(COMPLETED_GOALS_KEY, userKey))
+    setRecommendations([])
+    setRecommendationsSource('')
+    setRecommendationsCache({})
+    setExpandedHistoryId(null)
+    setTaskEditor(null)
+    setTaskDraft('')
+    setTaskDateDraft('')
+    setTaskEditorBusy(false)
+    setGenerationInput('')
+    setGeneratedSteps([])
+    setShowGeneratedResult(false)
+    setGenCustomInput('')
+    setGenCustomDateDraft('')
+    setIsGenerating(false)
+    setGenRowBusyId(null)
+    setGeneratedDateEditor(null)
+    setIsAddingOwnStep(false)
   }, [userKey])
+
+  useEffect(() => {
+    let cancelled = false
+    if (!hasAccountAccess) return undefined
+
+    async function loadAccountData() {
+      try {
+        const [remoteGoals, remoteCompletedGoals] = await Promise.all([
+          apiRequest('/api/goals', { userKey }),
+          apiRequest('/api/completed-goals', { userKey }),
+        ])
+        if (cancelled) return
+        setGoals(Array.isArray(remoteGoals) ? remoteGoals.map(normalizeGoal) : [])
+        setCompletedGoals(
+          Array.isArray(remoteCompletedGoals)
+            ? remoteCompletedGoals.map(normalizeGoal)
+            : []
+        )
+      } catch (error) {
+        console.error('Ошибка загрузки аккаунта:', error)
+      }
+    }
+
+    loadAccountData()
+    return () => {
+      cancelled = true
+    }
+  }, [hasAccountAccess, userKey])
 
   useEffect(() => {
     localStorage.setItem(goalsStorageKey, JSON.stringify(goals))
@@ -741,15 +790,43 @@ function App() {
       console.error('Обновление цели: нет корректного id', updatedGoal)
       return updatedGoal
     }
-    return normalizeGoal(updatedGoal)
+    const normalizedGoal = normalizeGoal(updatedGoal)
+    if (!hasAccountAccess) {
+      return normalizedGoal
+    }
+
+    return normalizeGoal(
+      await apiRequest(`/api/goals/${gid}`, {
+        method: 'PUT',
+        body: {
+          text: normalizedGoal.text,
+          microGoals: normalizedGoal.microGoals,
+        },
+        userKey,
+      })
+    )
   }
 
   async function createGoal(text) {
-    const normalized = normalizeGoal({
-      id: Date.now(),
-      text,
-      microGoals: [],
-    })
+    const goalText = String(text || '').trim()
+    if (!goalText) return null
+
+    const normalized = hasAccountAccess
+      ? normalizeGoal(
+          await apiRequest('/api/goals', {
+            method: 'POST',
+            body: {
+              text: goalText,
+              microGoals: [],
+            },
+            userKey,
+          })
+        )
+      : normalizeGoal({
+          id: Date.now(),
+          text: goalText,
+          microGoals: [],
+        })
     setGoals(prev => [normalized, ...prev])
     setActiveGoalId(normalized.id)
     localStorage.setItem(activeGoalStorageKey, String(normalized.id))
@@ -771,6 +848,19 @@ function App() {
 
     if (allDone) {
       const finishedGoal = { ...updatedGoal, finishedAt: new Date().toISOString() }
+      if (hasAccountAccess) {
+        const savedFinishedGoal = normalizeGoal(
+          await apiRequest('/api/completed-goals', {
+            method: 'POST',
+            body: finishedGoal,
+            userKey,
+          })
+        )
+        setGoals(prev => prev.filter(item => item.id !== goalId))
+        setCompletedGoals(prev => [savedFinishedGoal, ...prev])
+        return
+      }
+
       setGoals(prev => prev.filter(item => item.id !== goalId))
       setCompletedGoals(prev => [finishedGoal, ...prev])
       return
@@ -1262,6 +1352,12 @@ function App() {
     if (!confirmed) return
 
     try {
+      if (hasAccountAccess) {
+        await Promise.all([
+          apiRequest('/api/goals', { method: 'DELETE', userKey }),
+          apiRequest('/api/completed-goals', { method: 'DELETE', userKey }),
+        ])
+      }
       setCompletedGoals([])
       setGoals([])
       setActiveGoalId(null)
@@ -1275,11 +1371,33 @@ function App() {
     }
   }
 
-  function saveUserName() {
+  function saveUserIdentity() {
     const name = String(nameDraft || '').trim()
-    if (!name) return
-    localStorage.setItem(USER_NAME_KEY, name)
+    const email = normalizeEmail(emailDraft)
+    if (!name || !isValidEmail(email)) return
     setUserName(name)
+    setUserEmail(email)
+    setNameDraft(name)
+    setEmailDraft(email)
+    setAiError('')
+  }
+
+  function logoutUser() {
+    localStorage.removeItem(USER_NAME_KEY)
+    localStorage.removeItem(USER_EMAIL_KEY)
+    setUserName('')
+    setUserEmail('')
+    setNameDraft('')
+    setEmailDraft('')
+    setShowProfile(false)
+    setActiveTab('agenda')
+    setAiError('')
+    setRecommendations([])
+    setRecommendationsSource('')
+    setRecommendationsCache({})
+    setExpandedHistoryId(null)
+    closeTaskEditor()
+    resetGenerationUi()
   }
 
   const today = new Date().toLocaleDateString('ru-RU', {
@@ -1288,35 +1406,57 @@ function App() {
     month: 'long',
   })
 
-  if (!String(userName || '').trim()) {
+  if (!hasIdentity) {
     return (
       <main className="app-shell onboarding-shell">
         <section className="onboarding-card">
           <div className="logo-badge">✦</div>
-          <h1 className="screen-title">Как вас зовут?</h1>
-          <p className="secondary-text">Имя появится в профиле; дальше — повестка, генерация и журнал.</p>
-          <input
-            type="text"
-            className="big-input"
-            placeholder="Введите имя"
-            value={nameDraft}
-            onChange={e => setNameDraft(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === 'Enter') {
-                e.preventDefault()
-                saveUserName()
-              }
-            }}
-            autoFocus
-            autoComplete="name"
-          />
+          <h1 className="screen-title">Вход в аккаунт</h1>
+          <p className="secondary-text onboarding-copy">
+            Введите почту, чтобы открыть свои цели на другом устройстве. Имя покажем в настройках.
+          </p>
+          <div className="onboarding-fields">
+            <input
+              type="email"
+              className="onboarding-input"
+              placeholder="Почта"
+              value={emailDraft}
+              onChange={e => setEmailDraft(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && canSubmitIdentity) {
+                  e.preventDefault()
+                  saveUserIdentity()
+                }
+              }}
+              autoFocus
+              autoComplete="email"
+              inputMode="email"
+            />
+            <input
+              type="text"
+              className="onboarding-input"
+              placeholder="Имя"
+              value={nameDraft}
+              onChange={e => setNameDraft(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && canSubmitIdentity) {
+                  e.preventDefault()
+                  saveUserIdentity()
+                }
+              }}
+              autoComplete="name"
+            />
+          </div>
+          {String(emailDraft || '').trim() && !isValidEmail(emailDraft) && (
+            <p className="onboarding-error">Введите корректную почту</p>
+          )}
           <button
             type="button"
             className="primary-button"
-            disabled={!String(nameDraft || '').trim()}
-            onClick={saveUserName}
+            disabled={!canSubmitIdentity}
+            onClick={saveUserIdentity}
           >
-            Продолжить
+            Войти
           </button>
         </section>
       </main>
@@ -1880,38 +2020,19 @@ function App() {
             <h1>Настройки</h1>
             <div />
           </header>
-          <div className="profile-head">
-            <div className="avatar">Аватар</div>
-            <strong>{userName || 'Без имени'}</strong>
-            <small>user@email.com</small>
-          </div>
-          <button
-            type="button"
-            className="text-button profile-change-name"
-            onClick={() => {
-              localStorage.removeItem(USER_NAME_KEY)
-              setUserName('')
-              setNameDraft('')
-              setShowProfile(false)
-            }}
-          >
-            Сменить имя
-          </button>
           <div className="settings-list">
-            <div className="list-row"><span>Режим работы</span><span>{settings.mode}</span></div>
-            <button className="list-row" onClick={() => setSettings(s => ({ ...s, calendarAccess: !s.calendarAccess }))}>
-              <span>Доступ к календарю</span><span>{settings.calendarAccess ? 'Вкл' : 'Выкл'}</span>
-            </button>
-            <button className="list-row" onClick={() => setSettings(s => ({ ...s, geoAccess: !s.geoAccess }))}>
-              <span>Геолокация</span><span>{settings.geoAccess ? 'Вкл' : 'Выкл'}</span>
-            </button>
-            <button className="list-row" onClick={() => setSettings(s => ({ ...s, notifications: !s.notifications }))}>
-              <span>Уведомления</span><span>{settings.notifications ? 'Вкл' : 'Выкл'}</span>
-            </button>
-            <div className="list-row"><span>О приложении</span><span>{'>'}</span></div>
-            <div className="list-row"><span>Экспорт данных</span><span>{'>'}</span></div>
+            <div className="list-row list-row--stacked">
+              <span className="list-row-label">Имя</span>
+              <strong>{userName || 'Без имени'}</strong>
+            </div>
+            <div className="list-row list-row--stacked">
+              <span className="list-row-label">Почта</span>
+              <strong>{userEmail || 'Не указана'}</strong>
+            </div>
           </div>
-          <button className="secondary-button">Выйти</button>
+          <button type="button" className="danger-button profile-logout-button" onClick={logoutUser}>
+            Выйти
+          </button>
         </section>
       )}
 
