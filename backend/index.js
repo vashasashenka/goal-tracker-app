@@ -60,6 +60,7 @@ const yandex = new OpenAI({
 })
 
 let mailTransportPromise = null
+let schemaReadyPromise = null
 
 async function ensureSchema() {
   await pool.query(`
@@ -100,10 +101,17 @@ async function ensureSchema() {
   )
 }
 
-const schemaReady = ensureSchema().catch(error => {
-  console.error('Ошибка подготовки схемы БД:', error)
-  throw error
-})
+function ensureSchemaReady() {
+  if (!schemaReadyPromise) {
+    schemaReadyPromise = ensureSchema().catch(error => {
+      console.error('Ошибка подготовки схемы БД:', error)
+      schemaReadyPromise = null
+      throw error
+    })
+  }
+
+  return schemaReadyPromise
+}
 
 function normalizeEmail(email) {
   return String(email || '').trim().toLowerCase()
@@ -459,7 +467,7 @@ app.post('/api/auth/register', async (req, res) => {
 
   let client
   try {
-    await schemaReady
+    await ensureSchemaReady()
     client = await pool.connect()
     await client.query('BEGIN')
 
@@ -521,7 +529,7 @@ app.post('/api/auth/login', async (req, res) => {
 
   let client
   try {
-    await schemaReady
+    await ensureSchemaReady()
     client = await pool.connect()
     await client.query('BEGIN')
 
@@ -563,7 +571,7 @@ app.post('/api/auth/login', async (req, res) => {
 
 app.get('/api/auth/me', async (req, res) => {
   try {
-    await schemaReady
+    await ensureSchemaReady()
     const auth = await requireAuth(req, res)
     if (!auth) return
 
@@ -581,7 +589,7 @@ app.get('/api/auth/me', async (req, res) => {
 
 app.post('/api/auth/logout', async (req, res) => {
   try {
-    await schemaReady
+    await ensureSchemaReady()
     const sessionToken = getSessionToken(req)
     if (sessionToken) {
       await pool.query('DELETE FROM user_sessions WHERE token = $1', [sessionToken])
@@ -606,7 +614,7 @@ app.post('/api/auth/password-reset/request', async (req, res) => {
   let resetCodeHash = ''
 
   try {
-    await schemaReady
+    await ensureSchemaReady()
     client = await pool.connect()
     await client.query('BEGIN')
 
@@ -723,7 +731,7 @@ app.post('/api/auth/password-reset/confirm', async (req, res) => {
 
   let client
   try {
-    await schemaReady
+    await ensureSchemaReady()
     client = await pool.connect()
     await client.query('BEGIN')
 
@@ -784,7 +792,7 @@ app.post('/api/auth/password-reset/confirm', async (req, res) => {
 
 app.get('/api/goals', async (req, res) => {
   try {
-    await schemaReady
+    await ensureSchemaReady()
     const auth = await requireAuth(req, res)
     if (!auth) return
     const result = await pool.query('SELECT * FROM goals WHERE owner_key = $1 ORDER BY id DESC', [
@@ -806,7 +814,7 @@ app.get('/api/goals', async (req, res) => {
 
 app.get('/api/completed-goals', async (req, res) => {
   try {
-    await schemaReady
+    await ensureSchemaReady()
     const auth = await requireAuth(req, res)
     if (!auth) return
     const result = await pool.query(
@@ -869,7 +877,7 @@ app.post('/api/goals', async (req, res) => {
 
   let microGoals
   try {
-    await schemaReady
+    await ensureSchemaReady()
     const auth = await requireAuth(req, res)
     if (!auth) return
 
@@ -918,7 +926,7 @@ app.post('/api/goals/:id/generate-one', async (req, res) => {
   if (yandexMisconfigured(res)) return
 
   try {
-    await schemaReady
+    await ensureSchemaReady()
     const auth = await requireAuth(req, res)
     if (!auth) return
     const result = await pool.query('SELECT * FROM goals WHERE id = $1 AND owner_key = $2', [
@@ -956,7 +964,7 @@ app.put('/api/goals/:id', async (req, res) => {
   const { text, microGoals } = req.body
 
   try {
-    await schemaReady
+    await ensureSchemaReady()
     const auth = await requireAuth(req, res)
     if (!auth) return
     const result = await pool.query(
@@ -983,7 +991,7 @@ app.put('/api/goals/:id', async (req, res) => {
 
 app.delete('/api/goals', async (req, res) => {
   try {
-    await schemaReady
+    await ensureSchemaReady()
     const auth = await requireAuth(req, res)
     if (!auth) return
     await pool.query('DELETE FROM goals WHERE owner_key = $1', [auth.ownerKey])
@@ -998,7 +1006,7 @@ app.delete('/api/goals/:id', async (req, res) => {
   const goalId = Number(req.params.id)
 
   try {
-    await schemaReady
+    await ensureSchemaReady()
     const auth = await requireAuth(req, res)
     if (!auth) return
     await pool.query('DELETE FROM goals WHERE id = $1 AND owner_key = $2', [goalId, auth.ownerKey])
@@ -1013,7 +1021,7 @@ app.post('/api/completed-goals', async (req, res) => {
   const { id, text, microGoals, finishedAt } = req.body
 
   try {
-    await schemaReady
+    await ensureSchemaReady()
     const auth = await requireAuth(req, res)
     if (!auth) return
     await pool.query(
@@ -1041,7 +1049,7 @@ app.post('/api/completed-goals', async (req, res) => {
 
 app.delete('/api/completed-goals', async (req, res) => {
   try {
-    await schemaReady
+    await ensureSchemaReady()
     const auth = await requireAuth(req, res)
     if (!auth) return
     await pool.query('DELETE FROM completed_goals WHERE owner_key = $1', [auth.ownerKey])
