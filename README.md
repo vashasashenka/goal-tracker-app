@@ -16,7 +16,7 @@ npm run dev
 Backend:
 
 1. Copy `backend/.env.example` to `backend/.env`
-2. Fill DB and Yandex AI variables
+2. Fill DB, Yandex AI, and SMTP variables
 3. Run:
 
 ```bash
@@ -34,3 +34,7 @@ npm run dev
   - Single origin: `https://your-frontend.app`
   - Multiple origins: `https://a.app,https://b.app`
 - Backend port can be overridden with `PORT`.
+- Password reset via email requires SMTP settings in `backend/.env`.
+  - Required: `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`
+  - If your provider needs auth: `SMTP_USER`, `SMTP_PASSWORD`
+  - Optional: `SMTP_SECURE`, `SMTP_REPLY_TO`, `PASSWORD_RESET_TTL_MINUTES`, `PASSWORD_RESET_RESEND_SECONDS`

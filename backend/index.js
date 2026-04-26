@@ -3,6 +3,7 @@ import cors from 'cors'
 import dotenv from 'dotenv'
 import pg from 'pg'
 import OpenAI from 'openai'
+import nodemailer from 'nodemailer'
 import path from 'node:path'
 import { randomBytes, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto'
 import { promisify } from 'node:util'
@@ -13,6 +14,22 @@ dotenv.config()
 const { Pool } = pg
 const scrypt = promisify(scryptCallback)
 const MIN_PASSWORD_LENGTH = 8
+const PASSWORD_RESET_CODE_LENGTH = 6
+const PASSWORD_RESET_TTL_MINUTES = Math.max(
+  5,
+  Math.trunc(Number(process.env.PASSWORD_RESET_TTL_MINUTES) || 15)
+)
+const PASSWORD_RESET_RESEND_SECONDS = Math.max(
+  30,
+  Math.trunc(Number(process.env.PASSWORD_RESET_RESEND_SECONDS) || 60)
+)
+const smtpHost = String(process.env.SMTP_HOST || '').trim()
+const smtpPort = Math.trunc(Number(process.env.SMTP_PORT) || 0)
+const smtpSecure = /^(1|true|yes)$/i.test(String(process.env.SMTP_SECURE || '').trim())
+const smtpUser = String(process.env.SMTP_USER || '').trim()
+const smtpPassword = String(process.env.SMTP_PASSWORD || '').trim()
+const smtpFrom = String(process.env.SMTP_FROM || '').trim()
+const smtpReplyTo = String(process.env.SMTP_REPLY_TO || '').trim()
 
 const app = express()
 const PORT = Number(process.env.PORT) || 5001
@@ -42,6 +59,8 @@ const yandex = new OpenAI({
   baseURL: 'https://llm.api.cloud.yandex.net/v1',
 })
 
+let mailTransportPromise = null
+
 async function ensureSchema() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
@@ -59,9 +78,22 @@ async function ensureSchema() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS password_reset_codes (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      code_hash TEXT NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      used_at TIMESTAMPTZ
+    )
+  `)
   await pool.query('ALTER TABLE goals ADD COLUMN IF NOT EXISTS owner_key TEXT')
   await pool.query('ALTER TABLE completed_goals ADD COLUMN IF NOT EXISTS owner_key TEXT')
   await pool.query('CREATE INDEX IF NOT EXISTS idx_user_sessions_user_id ON user_sessions(user_id)')
+  await pool.query(
+    'CREATE INDEX IF NOT EXISTS idx_password_reset_codes_user_id ON password_reset_codes(user_id)'
+  )
   await pool.query('CREATE INDEX IF NOT EXISTS idx_goals_owner_key ON goals(owner_key)')
   await pool.query(
     'CREATE INDEX IF NOT EXISTS idx_completed_goals_owner_key ON completed_goals(owner_key)'
@@ -83,6 +115,10 @@ function isValidEmail(email) {
 
 function isValidPassword(password) {
   return String(password || '').length >= MIN_PASSWORD_LENGTH
+}
+
+function isValidResetCode(code) {
+  return new RegExp(`^\\d{${PASSWORD_RESET_CODE_LENGTH}}$`).test(String(code || '').trim())
 }
 
 function ownerKeyForUserId(userId) {
@@ -120,6 +156,103 @@ async function verifyPassword(password, storedHash) {
 
 function createSessionToken() {
   return randomBytes(32).toString('hex')
+}
+
+function createResetCode() {
+  const number = randomBytes(4).readUInt32BE(0) % 10 ** PASSWORD_RESET_CODE_LENGTH
+  return String(number).padStart(PASSWORD_RESET_CODE_LENGTH, '0')
+}
+
+function isMailConfigured() {
+  if (!smtpHost || !smtpPort || !smtpFrom) return false
+  if ((smtpUser && !smtpPassword) || (!smtpUser && smtpPassword)) return false
+  return true
+}
+
+function mailMisconfigured(res) {
+  if (isMailConfigured()) return false
+
+  res.status(503).json({
+    error:
+      'Восстановление пароля пока не настроено: заполните SMTP_HOST, SMTP_PORT, SMTP_FROM и при необходимости SMTP_USER/SMTP_PASSWORD в backend/.env',
+  })
+  return true
+}
+
+function getMailTransport() {
+  if (!isMailConfigured()) {
+    throw new Error('mail-not-configured')
+  }
+
+  if (!mailTransportPromise) {
+    mailTransportPromise = Promise.resolve(
+      nodemailer.createTransport({
+        host: smtpHost,
+        port: smtpPort,
+        secure: smtpSecure,
+        ...(smtpUser || smtpPassword
+          ? {
+              auth: {
+                user: smtpUser,
+                pass: smtpPassword,
+              },
+            }
+          : {}),
+      })
+    )
+  }
+
+  return mailTransportPromise
+}
+
+function formatMinutes(count) {
+  const abs = Math.abs(Math.trunc(Number(count) || 0))
+  const lastTwo = abs % 100
+  const last = abs % 10
+  if (lastTwo >= 11 && lastTwo <= 14) return `${abs} минут`
+  if (last === 1) return `${abs} минуту`
+  if (last >= 2 && last <= 4) return `${abs} минуты`
+  return `${abs} минут`
+}
+
+function maskEmail(email) {
+  const normalized = normalizeEmail(email)
+  const [localPart, domain] = normalized.split('@')
+  if (!localPart || !domain) return normalized
+  const visible = localPart.slice(0, 2)
+  const hidden = '*'.repeat(Math.max(localPart.length - visible.length, 1))
+  return `${visible}${hidden}@${domain}`
+}
+
+async function sendPasswordResetCode({ email, name, code }) {
+  const transport = await getMailTransport()
+  const ttlText = formatMinutes(PASSWORD_RESET_TTL_MINUTES)
+  const safeName = String(name || '').trim()
+  const greeting = safeName ? `Здравствуйте, ${safeName}!` : 'Здравствуйте!'
+
+  await transport.sendMail({
+    from: smtpFrom,
+    to: email,
+    ...(smtpReplyTo ? { replyTo: smtpReplyTo } : {}),
+    subject: 'Goal Tracker: код для сброса пароля',
+    text: `${greeting}
+
+Вы запросили восстановление пароля в Goal Tracker.
+
+Ваш код для сброса пароля: ${code}
+
+Код действует ${ttlText}. Если это были не вы, просто проигнорируйте письмо.`,
+    html: `
+      <div style="font-family: Arial, sans-serif; color: #101828; line-height: 1.6;">
+        <p>${greeting}</p>
+        <p>Вы запросили восстановление пароля в <strong>Goal Tracker</strong>.</p>
+        <p>Ваш код для сброса пароля:</p>
+        <p style="font-size: 28px; font-weight: 700; letter-spacing: 6px; margin: 16px 0;">${code}</p>
+        <p>Код действует ${ttlText}.</p>
+        <p>Если это были не вы, просто проигнорируйте письмо.</p>
+      </div>
+    `,
+  })
 }
 
 function buildAuthResponse(user, sessionToken) {
@@ -457,6 +590,195 @@ app.post('/api/auth/logout', async (req, res) => {
   } catch (error) {
     console.error('Ошибка выхода:', error)
     res.status(500).json({ error: 'Ошибка сервера' })
+  }
+})
+
+app.post('/api/auth/password-reset/request', async (req, res) => {
+  const email = normalizeEmail(req.body?.email)
+
+  if (!isValidEmail(email)) {
+    return res.status(400).json({ error: 'Введите корректную почту' })
+  }
+  if (mailMisconfigured(res)) return
+
+  let client
+  let resetUserId = null
+  let resetCodeHash = ''
+
+  try {
+    await schemaReady
+    client = await pool.connect()
+    await client.query('BEGIN')
+
+    const userResult = await client.query(
+      'SELECT id, name, email FROM users WHERE email = $1 LIMIT 1',
+      [email]
+    )
+
+    if (userResult.rows.length === 0) {
+      await client.query('COMMIT')
+      return res.json({
+        message: 'Если аккаунт с такой почтой существует, мы отправили код для сброса пароля.',
+      })
+    }
+
+    const user = userResult.rows[0]
+    resetUserId = Number(user.id)
+
+    const latestCodeResult = await client.query(
+      `
+        SELECT created_at
+        FROM password_reset_codes
+        WHERE user_id = $1
+          AND used_at IS NULL
+          AND expires_at > NOW()
+        ORDER BY created_at DESC
+        LIMIT 1
+      `,
+      [resetUserId]
+    )
+
+    if (latestCodeResult.rows.length > 0) {
+      const createdAt = new Date(latestCodeResult.rows[0].created_at).getTime()
+      const elapsedMs = Date.now() - createdAt
+      const cooldownMs = PASSWORD_RESET_RESEND_SECONDS * 1000 - elapsedMs
+
+      if (cooldownMs > 0) {
+        await client.query('ROLLBACK')
+        return res.status(429).json({
+          error: `Код уже отправлен. Попробуйте снова через ${Math.ceil(cooldownMs / 1000)} сек.`,
+        })
+      }
+    }
+
+    await client.query('DELETE FROM password_reset_codes WHERE user_id = $1', [resetUserId])
+
+    const code = createResetCode()
+    resetCodeHash = await hashPassword(code)
+    const expiresAt = new Date(Date.now() + PASSWORD_RESET_TTL_MINUTES * 60 * 1000)
+
+    await client.query(
+      `
+        INSERT INTO password_reset_codes (user_id, code_hash, expires_at)
+        VALUES ($1, $2, $3)
+      `,
+      [resetUserId, resetCodeHash, expiresAt]
+    )
+
+    await client.query('COMMIT')
+
+    try {
+      await sendPasswordResetCode({
+        email: user.email,
+        name: user.name,
+        code,
+      })
+    } catch (error) {
+      console.error('Ошибка отправки письма для сброса пароля:', error)
+      await pool
+        .query(
+          `
+            DELETE FROM password_reset_codes
+            WHERE user_id = $1
+              AND code_hash = $2
+              AND used_at IS NULL
+          `,
+          [resetUserId, resetCodeHash]
+        )
+        .catch(() => {})
+
+      return res
+        .status(500)
+        .json({ error: 'Не удалось отправить письмо с кодом. Попробуйте позже.' })
+    }
+
+    res.json({
+      message: `Код для сброса пароля отправлен на ${maskEmail(user.email)}.`,
+    })
+  } catch (error) {
+    if (client) await client.query('ROLLBACK').catch(() => {})
+    console.error('Ошибка запроса сброса пароля:', error)
+    res.status(500).json({ error: 'Не удалось отправить код. Попробуйте позже.' })
+  } finally {
+    client?.release()
+  }
+})
+
+app.post('/api/auth/password-reset/confirm', async (req, res) => {
+  const email = normalizeEmail(req.body?.email)
+  const code = String(req.body?.code || '').trim()
+  const newPassword = String(req.body?.newPassword || '')
+
+  if (!isValidEmail(email)) {
+    return res.status(400).json({ error: 'Введите корректную почту' })
+  }
+  if (!isValidResetCode(code)) {
+    return res.status(400).json({ error: 'Введите 6-значный код из письма' })
+  }
+  if (!isValidPassword(newPassword)) {
+    return res
+      .status(400)
+      .json({ error: `Пароль должен быть не короче ${MIN_PASSWORD_LENGTH} символов` })
+  }
+
+  let client
+  try {
+    await schemaReady
+    client = await pool.connect()
+    await client.query('BEGIN')
+
+    const userResult = await client.query(
+      'SELECT id FROM users WHERE email = $1 LIMIT 1',
+      [email]
+    )
+    if (userResult.rows.length === 0) {
+      await client.query('ROLLBACK')
+      return res.status(400).json({ error: 'Неверный код или почта' })
+    }
+
+    const userId = Number(userResult.rows[0].id)
+    const resetCodeResult = await client.query(
+      `
+        SELECT id, code_hash
+        FROM password_reset_codes
+        WHERE user_id = $1
+          AND used_at IS NULL
+          AND expires_at > NOW()
+        ORDER BY created_at DESC
+        LIMIT 1
+      `,
+      [userId]
+    )
+
+    if (resetCodeResult.rows.length === 0) {
+      await client.query('ROLLBACK')
+      return res
+        .status(400)
+        .json({ error: 'Код истёк или не найден. Запросите новый код.' })
+    }
+
+    const resetRow = resetCodeResult.rows[0]
+    const codeOk = await verifyPassword(code, resetRow.code_hash)
+    if (!codeOk) {
+      await client.query('ROLLBACK')
+      return res.status(400).json({ error: 'Неверный код' })
+    }
+
+    const nextPasswordHash = await hashPassword(newPassword)
+    await client.query('UPDATE users SET password_hash = $1 WHERE id = $2', [nextPasswordHash, userId])
+    await client.query('UPDATE password_reset_codes SET used_at = NOW() WHERE id = $1', [
+      resetRow.id,
+    ])
+    await client.query('DELETE FROM user_sessions WHERE user_id = $1', [userId])
+
+    await client.query('COMMIT')
+    res.status(204).end()
+  } catch (error) {
+    if (client) await client.query('ROLLBACK').catch(() => {})
+    console.error('Ошибка подтверждения сброса пароля:', error)
+    res.status(500).json({ error: 'Не удалось обновить пароль. Попробуйте позже.' })
+  } finally {
+    client?.release()
   }
 })
 

@@ -688,6 +688,12 @@ small,
   color: #b42318;
 }
 
+.onboarding-note {
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
 .auth-toggle-link {
   width: 100%;
   margin-top: 12px;

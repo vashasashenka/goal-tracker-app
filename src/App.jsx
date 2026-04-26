@@ -34,6 +34,7 @@ const PROFILE_ID_KEY = 'goal_tracker_profile_id'
 const USER_NAME_KEY = 'goal_tracker_user_name'
 const USER_EMAIL_KEY = 'goal_tracker_user_email'
 const AUTH_TOKEN_KEY = 'goal_tracker_auth_token'
+const RESET_CODE_LENGTH = 6
 
 /** Сколько подсказок ИИ держим на экране (после добавления одной — дозаполняем до этого числа). */
 const AI_SUGGEST_SLOTS = 3
@@ -45,6 +46,10 @@ function normalizeEmail(email) {
 
 function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmail(email))
+}
+
+function isValidResetCode(code) {
+  return new RegExp(`^\\d{${RESET_CODE_LENGTH}}$`).test(String(code || '').trim())
 }
 
 async function apiRequest(path, { method = 'GET', body, sessionToken } = {}) {
@@ -399,9 +404,14 @@ function App() {
   const [authMode, setAuthMode] = useState('login')
   const [passwordDraft, setPasswordDraft] = useState('')
   const [passwordRepeatDraft, setPasswordRepeatDraft] = useState('')
+  const [resetStage, setResetStage] = useState('request')
+  const [resetCodeDraft, setResetCodeDraft] = useState('')
+  const [resetNewPasswordDraft, setResetNewPasswordDraft] = useState('')
+  const [resetNewPasswordRepeatDraft, setResetNewPasswordRepeatDraft] = useState('')
   const [authBusy, setAuthBusy] = useState(false)
   const [authChecked, setAuthChecked] = useState(() => !initialAuthToken)
   const [authError, setAuthError] = useState('')
+  const [authInfo, setAuthInfo] = useState('')
 
   const [generationInput, setGenerationInput] = useState('')
   const [generatedSteps, setGeneratedSteps] = useState([])
@@ -435,6 +445,12 @@ function App() {
     isValidEmail(emailDraft) &&
     String(passwordDraft || '').length >= 8 &&
     passwordDraft === passwordRepeatDraft
+  const canSubmitResetRequest = isValidEmail(emailDraft)
+  const canSubmitResetConfirm =
+    isValidEmail(emailDraft) &&
+    isValidResetCode(resetCodeDraft) &&
+    String(resetNewPasswordDraft || '').length >= 8 &&
+    resetNewPasswordDraft === resetNewPasswordRepeatDraft
   const activeGoalStorageKey = useMemo(
     () => makeScopedStorageKey(ACTIVE_GOAL_KEY, storageScope),
     [storageScope]
@@ -455,6 +471,16 @@ function App() {
     setGenRowBusyId(null)
     setGeneratedDateEditor(null)
     setIsAddingOwnStep(false)
+  }
+
+  function resetRecoveryFlow({ keepEmail = true } = {}) {
+    setResetStage('request')
+    setResetCodeDraft('')
+    setResetNewPasswordDraft('')
+    setResetNewPasswordRepeatDraft('')
+    if (!keepEmail) {
+      setEmailDraft('')
+    }
   }
 
   useEffect(() => {
@@ -523,6 +549,7 @@ function App() {
         setNameDraft(nextName)
         setEmailDraft(nextEmail)
         setAuthError('')
+        setAuthInfo('')
       } catch (error) {
         if (cancelled) return
         console.error('Проверка сессии:', error)
@@ -535,6 +562,7 @@ function App() {
         setNameDraft('')
         setEmailDraft('')
         setAuthError('Сессия истекла. Войдите снова.')
+        setAuthInfo('')
       } finally {
         if (!cancelled) {
           setAuthChecked(true)
@@ -1502,8 +1530,10 @@ function App() {
     setPasswordRepeatDraft('')
     setAuthMode('login')
     setAuthError('')
+    setAuthInfo('')
     setAiError('')
     setAuthChecked(true)
+    resetRecoveryFlow()
   }
 
   async function submitLogin() {
@@ -1513,6 +1543,7 @@ function App() {
 
     setAuthBusy(true)
     setAuthError('')
+    setAuthInfo('')
     try {
       const payload = await apiRequest('/api/auth/login', {
         method: 'POST',
@@ -1540,6 +1571,7 @@ function App() {
 
     setAuthBusy(true)
     setAuthError('')
+    setAuthInfo('')
     try {
       const payload = await apiRequest('/api/auth/register', {
         method: 'POST',
@@ -1553,6 +1585,63 @@ function App() {
     } catch (error) {
       console.error('Регистрация:', error)
       setAuthError(error?.message || 'Не удалось создать аккаунт')
+    } finally {
+      setAuthBusy(false)
+    }
+  }
+
+  async function submitPasswordResetRequest() {
+    const email = normalizeEmail(emailDraft)
+    if (!isValidEmail(email)) return
+
+    setAuthBusy(true)
+    setAuthError('')
+    setAuthInfo('')
+    try {
+      const payload = await apiRequest('/api/auth/password-reset/request', {
+        method: 'POST',
+        body: { email },
+      })
+      setResetStage('confirm')
+      setResetCodeDraft('')
+      setResetNewPasswordDraft('')
+      setResetNewPasswordRepeatDraft('')
+      setAuthInfo(payload?.message || 'Мы отправили код для сброса пароля на вашу почту.')
+    } catch (error) {
+      console.error('Запрос сброса пароля:', error)
+      setAuthError(error?.message || 'Не удалось отправить код')
+    } finally {
+      setAuthBusy(false)
+    }
+  }
+
+  async function submitPasswordResetConfirm() {
+    const email = normalizeEmail(emailDraft)
+    const code = String(resetCodeDraft || '').trim()
+    const newPassword = String(resetNewPasswordDraft || '')
+
+    if (!isValidEmail(email) || !isValidResetCode(code) || !newPassword) return
+
+    setAuthBusy(true)
+    setAuthError('')
+    setAuthInfo('')
+    try {
+      await apiRequest('/api/auth/password-reset/confirm', {
+        method: 'POST',
+        body: {
+          email,
+          code,
+          newPassword,
+        },
+      })
+      setAuthMode('login')
+      setPasswordDraft('')
+      setPasswordRepeatDraft('')
+      resetRecoveryFlow()
+      setAuthInfo('Пароль обновлён. Теперь войдите с новым паролем.')
+    } catch (error) {
+      console.error('Подтверждение сброса пароля:', error)
+      setAuthError(error?.message || 'Не удалось обновить пароль')
     } finally {
       setAuthBusy(false)
     }
@@ -1579,10 +1668,12 @@ function App() {
       setEmailDraft('')
       setPasswordDraft('')
       setPasswordRepeatDraft('')
+      resetRecoveryFlow({ keepEmail: false })
       setShowProfile(false)
       setActiveTab('agenda')
       setAiError('')
       setAuthError('')
+      setAuthInfo('')
       setRecommendations([])
       setRecommendationsSource('')
       setRecommendationsCache({})
@@ -1615,39 +1706,55 @@ function App() {
       <main className="app-shell onboarding-shell">
         <section className="onboarding-card">
           <div className="logo-badge">✦</div>
-          <div className="auth-switcher">
-            <button
-              type="button"
-              className={`auth-switcher-button ${authMode === 'login' ? 'auth-switcher-button--active' : ''}`}
-              onClick={() => {
-                setAuthMode('login')
-                setAuthError('')
-                setPasswordDraft('')
-                setPasswordRepeatDraft('')
-              }}
-            >
-              Войти
-            </button>
-            <button
-              type="button"
-              className={`auth-switcher-button ${authMode === 'register' ? 'auth-switcher-button--active' : ''}`}
-              onClick={() => {
-                setAuthMode('register')
-                setAuthError('')
-                setPasswordDraft('')
-                setPasswordRepeatDraft('')
-              }}
-            >
-              Зарегистрироваться
-            </button>
-          </div>
+          {authMode !== 'reset' && (
+            <div className="auth-switcher">
+              <button
+                type="button"
+                className={`auth-switcher-button ${authMode === 'login' ? 'auth-switcher-button--active' : ''}`}
+                onClick={() => {
+                  setAuthMode('login')
+                  setAuthError('')
+                  setAuthInfo('')
+                  setPasswordDraft('')
+                  setPasswordRepeatDraft('')
+                  resetRecoveryFlow()
+                }}
+              >
+                Войти
+              </button>
+              <button
+                type="button"
+                className={`auth-switcher-button ${authMode === 'register' ? 'auth-switcher-button--active' : ''}`}
+                onClick={() => {
+                  setAuthMode('register')
+                  setAuthError('')
+                  setAuthInfo('')
+                  setPasswordDraft('')
+                  setPasswordRepeatDraft('')
+                  resetRecoveryFlow()
+                }}
+              >
+                Зарегистрироваться
+              </button>
+            </div>
+          )}
           <h1 className="screen-title">
-            {authMode === 'register' ? 'Регистрация' : 'Вход в аккаунт'}
+            {authMode === 'register'
+              ? 'Регистрация'
+              : authMode === 'reset'
+                ? resetStage === 'confirm'
+                  ? 'Сброс пароля'
+                  : 'Забыли пароль?'
+                : 'Вход в аккаунт'}
           </h1>
           <p className="secondary-text onboarding-copy">
             {authMode === 'register'
               ? 'Создайте аккаунт: имя, почта и пароль. Потом сможете входить с любого устройства.'
-              : 'Введите почту и пароль, чтобы открыть свои цели и историю.'}
+              : authMode === 'reset'
+                ? resetStage === 'confirm'
+                  ? 'Введите код из письма и задайте новый пароль.'
+                  : 'Укажите почту аккаунта. Мы отправим 6-значный код для сброса пароля.'
+                : 'Введите почту и пароль, чтобы открыть свои цели и историю.'}
           </p>
           <div className="onboarding-fields">
             {authMode === 'register' && (
@@ -1684,21 +1791,26 @@ function App() {
               autoComplete="email"
               inputMode="email"
             />
-            <input
-              type="password"
-              className="onboarding-input"
-              placeholder="Пароль"
-              value={passwordDraft}
-              onChange={e => setPasswordDraft(e.target.value)}
-              onKeyDown={e => {
-                if (e.key === 'Enter' && (authMode === 'register' ? canSubmitRegister : canSubmitLogin)) {
-                  e.preventDefault()
-                  if (authMode === 'register') submitRegister()
-                  else submitLogin()
-                }
-              }}
-              autoComplete={authMode === 'register' ? 'new-password' : 'current-password'}
-            />
+            {authMode !== 'reset' && (
+              <input
+                type="password"
+                className="onboarding-input"
+                placeholder="Пароль"
+                value={passwordDraft}
+                onChange={e => setPasswordDraft(e.target.value)}
+                onKeyDown={e => {
+                  if (
+                    e.key === 'Enter' &&
+                    (authMode === 'register' ? canSubmitRegister : canSubmitLogin)
+                  ) {
+                    e.preventDefault()
+                    if (authMode === 'register') submitRegister()
+                    else submitLogin()
+                  }
+                }}
+                autoComplete={authMode === 'register' ? 'new-password' : 'current-password'}
+              />
+            )}
             {authMode === 'register' && (
               <input
                 type="password"
@@ -1715,6 +1827,53 @@ function App() {
                 autoComplete="new-password"
               />
             )}
+            {authMode === 'reset' && resetStage === 'confirm' && (
+              <>
+                <input
+                  type="text"
+                  className="onboarding-input"
+                  placeholder="6-значный код"
+                  value={resetCodeDraft}
+                  onChange={e => setResetCodeDraft(e.target.value.replace(/\D/g, '').slice(0, RESET_CODE_LENGTH))}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && canSubmitResetConfirm) {
+                      e.preventDefault()
+                      submitPasswordResetConfirm()
+                    }
+                  }}
+                  autoComplete="one-time-code"
+                  inputMode="numeric"
+                />
+                <input
+                  type="password"
+                  className="onboarding-input"
+                  placeholder="Новый пароль"
+                  value={resetNewPasswordDraft}
+                  onChange={e => setResetNewPasswordDraft(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && canSubmitResetConfirm) {
+                      e.preventDefault()
+                      submitPasswordResetConfirm()
+                    }
+                  }}
+                  autoComplete="new-password"
+                />
+                <input
+                  type="password"
+                  className="onboarding-input"
+                  placeholder="Повторите новый пароль"
+                  value={resetNewPasswordRepeatDraft}
+                  onChange={e => setResetNewPasswordRepeatDraft(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && canSubmitResetConfirm) {
+                      e.preventDefault()
+                      submitPasswordResetConfirm()
+                    }
+                  }}
+                  autoComplete="new-password"
+                />
+              </>
+            )}
           </div>
           {String(emailDraft || '').trim() && !isValidEmail(emailDraft) && (
             <p className="onboarding-error">Введите корректную почту</p>
@@ -1727,26 +1886,103 @@ function App() {
             passwordDraft !== passwordRepeatDraft && (
               <p className="onboarding-error">Пароли не совпадают</p>
             )}
+          {authMode === 'reset' && resetStage === 'confirm' && String(resetCodeDraft || '').length > 0 && !isValidResetCode(resetCodeDraft) && (
+            <p className="onboarding-error">Введите 6-значный код из письма</p>
+          )}
+          {authMode === 'reset' &&
+            resetStage === 'confirm' &&
+            String(resetNewPasswordDraft || '').length > 0 &&
+            String(resetNewPasswordDraft || '').length < 8 && (
+              <p className="onboarding-error">Новый пароль должен быть не короче 8 символов</p>
+            )}
+          {authMode === 'reset' &&
+            resetStage === 'confirm' &&
+            String(resetNewPasswordRepeatDraft || '').length > 0 &&
+            resetNewPasswordDraft !== resetNewPasswordRepeatDraft && (
+              <p className="onboarding-error">Пароли не совпадают</p>
+            )}
+          {authInfo && <p className="onboarding-note">{authInfo}</p>}
           {authError && <p className="onboarding-error">{authError}</p>}
           <button
             type="button"
             className="primary-button"
-            disabled={authBusy || (authMode === 'register' ? !canSubmitRegister : !canSubmitLogin)}
-            onClick={authMode === 'register' ? submitRegister : submitLogin}
+            disabled={
+              authBusy ||
+              (authMode === 'register'
+                ? !canSubmitRegister
+                : authMode === 'reset'
+                  ? resetStage === 'confirm'
+                    ? !canSubmitResetConfirm
+                    : !canSubmitResetRequest
+                  : !canSubmitLogin)
+            }
+            onClick={
+              authMode === 'register'
+                ? submitRegister
+                : authMode === 'reset'
+                  ? resetStage === 'confirm'
+                    ? submitPasswordResetConfirm
+                    : submitPasswordResetRequest
+                  : submitLogin
+            }
           >
-            {authBusy ? 'Подождите…' : authMode === 'register' ? 'Зарегистрироваться' : 'Войти'}
+            {authBusy
+              ? 'Подождите…'
+              : authMode === 'register'
+                ? 'Зарегистрироваться'
+                : authMode === 'reset'
+                  ? resetStage === 'confirm'
+                    ? 'Сбросить пароль'
+                    : 'Отправить код'
+                  : 'Войти'}
           </button>
+          {authMode === 'login' && (
+            <button
+              type="button"
+              className="text-button auth-toggle-link"
+              onClick={() => {
+                setAuthMode('reset')
+                setAuthError('')
+                setAuthInfo('')
+                setPasswordDraft('')
+                setPasswordRepeatDraft('')
+                resetRecoveryFlow()
+              }}
+            >
+              Забыли пароль?
+            </button>
+          )}
+          {authMode === 'reset' && resetStage === 'confirm' && (
+            <button
+              type="button"
+              className="text-button auth-toggle-link"
+              onClick={submitPasswordResetRequest}
+              disabled={authBusy || !canSubmitResetRequest}
+            >
+              Отправить код ещё раз
+            </button>
+          )}
           <button
             type="button"
             className="text-button auth-toggle-link"
             onClick={() => {
-              setAuthMode(prev => (prev === 'login' ? 'register' : 'login'))
+              if (authMode === 'reset') {
+                setAuthMode('login')
+              } else {
+                setAuthMode(prev => (prev === 'login' ? 'register' : 'login'))
+              }
               setAuthError('')
+              setAuthInfo('')
               setPasswordDraft('')
               setPasswordRepeatDraft('')
+              resetRecoveryFlow()
             }}
           >
-            {authMode === 'register' ? 'Уже есть аккаунт? Войти' : 'Нет аккаунта? Зарегистрироваться'}
+            {authMode === 'register'
+              ? 'Уже есть аккаунт? Войти'
+              : authMode === 'reset'
+                ? 'Вспомнили пароль? Войти'
+                : 'Нет аккаунта? Зарегистрироваться'}
           </button>
         </section>
       </main>
