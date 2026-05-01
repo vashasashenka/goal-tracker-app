@@ -1,4 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  ArrowLeft,
+  Briefcase,
+  CalendarBlank,
+  CaretLeft,
+  CaretRight,
+  ChartBar,
+  Gear,
+  GraduationCap,
+  Leaf,
+  Lightning,
+  ListBullets,
+  Plus,
+  Sparkle,
+  Target,
+  X,
+} from '@phosphor-icons/react'
 import Analytics from './components/Analytics'
 import { normalizeGoalCategory, resolveGoalCreatedAt } from './utils/statistics'
 
@@ -278,20 +295,12 @@ function compareMicroGoalsByCheckpoint(a, b) {
   return String(a?.text || '').localeCompare(String(b?.text || ''), 'ru')
 }
 
-function CalendarGlyph() {
-  return (
-    <svg
-      className="calendar-glyph"
-      viewBox="0 0 24 24"
-      fill="none"
-      aria-hidden="true"
-    >
-      <rect x="4" y="6" width="16" height="14" rx="2.8" stroke="currentColor" strokeWidth="2" />
-      <path d="M8 4.5V8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-      <path d="M16 4.5V8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-      <path d="M4 9.5H20" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
-  )
+function GoalCategoryIcon({ category, size = 22 }) {
+  const p = { size, weight: 'regular', 'aria-hidden': true }
+  if (category === 'Учёба') return <GraduationCap {...p} />
+  if (category === 'Работа') return <Briefcase {...p} />
+  if (category === 'Личное') return <Leaf {...p} />
+  return <Target {...p} />
 }
 
 function getRecommendationCacheKey(goal, sourceText = '') {
@@ -1182,7 +1191,6 @@ function App() {
     const ph = {
       id: `ph-rec-${t}-0`,
       text: '',
-      icon: '✨',
       placeholder: true,
     }
     const onScreenTexts = real.filter(r => r.id !== removedItemId).map(r => r.text)
@@ -1206,7 +1214,6 @@ function App() {
             ? {
                 id: String(one?.id ?? `r-${Date.now()}-${Math.random().toString(16).slice(2, 9)}`),
                 text: textOk,
-                icon: '✨',
                 checkpointOrder: one.checkpointOrder,
                 recommendedDate: one.recommendedDate,
                 recommendedOffsetDays: one.recommendedOffsetDays ?? null,
@@ -1244,7 +1251,6 @@ function App() {
       const nextRecommendations = planned.map(item => ({
           ...item,
           id: item.id,
-          icon: '✨',
         }))
       setRecommendations(nextRecommendations)
       storeRecommendationsInCache(activeGoal, trimmed, nextRecommendations)
@@ -2227,10 +2233,13 @@ function App() {
           <header className="screen-header">
             <div>
               <h1>{today}</h1>
-              <small>⚡ {utilization}</small>
+              <small className="screen-header-sub">
+                <Lightning size={15} weight="fill" aria-hidden />
+                {utilization}
+              </small>
             </div>
-            <button className="icon-button" onClick={() => setShowProfile(true)}>
-              ⚙️
+            <button type="button" className="icon-button" onClick={() => setShowProfile(true)} aria-label="Настройки">
+              <Gear size={20} weight="regular" aria-hidden />
             </button>
           </header>
 
@@ -2305,19 +2314,16 @@ function App() {
                     <div className="goal-hero-text-block">
                       <div className="goal-hero-title-row">
                         <span className="goal-hero-icon" aria-hidden="true">
-                          {activeGoal.category === 'Учёба'
-                            ? '🎓'
-                            : activeGoal.category === 'Работа'
-                              ? '💼'
-                              : activeGoal.category === 'Личное'
-                                ? '🌿'
-                                : '🎯'}
+                          <GoalCategoryIcon category={activeGoal.category} />
                         </span>
                         <p className="goal-hero-title">{activeGoal.text}</p>
                       </div>
                       {safeGoals.length <= 1 && (
-                        <p className="secondary-text goal-hero-hint">
-                          Добавьте вторую цель в ✨ Генерации — появятся стрелки для переключения.
+                        <p className="secondary-text goal-hero-hint goal-hero-hint--with-icon">
+                          <Sparkle size={15} weight="fill" aria-hidden />
+                          <span>
+                            Добавьте вторую цель в разделе «Генерация» — появятся стрелки для переключения.
+                          </span>
                         </p>
                       )}
                     </div>
@@ -2329,7 +2335,7 @@ function App() {
                           aria-label="Предыдущая цель"
                           onClick={() => switchActiveGoal(-1)}
                         >
-                          ‹
+                          <CaretLeft size={22} weight="bold" aria-hidden />
                         </button>
                         <button
                           type="button"
@@ -2337,7 +2343,7 @@ function App() {
                           aria-label="Следующая цель"
                           onClick={() => switchActiveGoal(1)}
                         >
-                          ›
+                          <CaretRight size={22} weight="bold" aria-hidden />
                         </button>
                       </div>
                     )}
@@ -2350,7 +2356,8 @@ function App() {
                         setActiveTab('generate')
                       }}
                     >
-                      ＋ Новая цель
+                      <Plus size={16} weight="bold" aria-hidden />
+                      Новая цель
                     </button>
                   </div>
                 )}
@@ -2360,7 +2367,7 @@ function App() {
                 <div className="goal-progress-card">
                   <div className="goal-progress-head">
                     <span>Прогресс по цели</span>
-                    <strong>{activeGoalProgress.percent}%</strong>
+                    <span className="type-accent-number">{activeGoalProgress.percent}%</span>
                   </div>
                   <div
                     className="goal-progress-track"
@@ -2534,7 +2541,9 @@ function App() {
                         className={`recommendation-card ${item.instantEnter ? 'micro-appear-instant' : 'micro-appear'}`}
                         style={item.instantEnter ? undefined : { '--appear-i': index }}
                       >
-                        <div className="recommendation-icon">{item.icon}</div>
+                        <div className="recommendation-icon">
+                          <Sparkle size={22} weight="regular" aria-hidden />
+                        </div>
                         <p>{item.text}</p>
                         <div className="recommendation-card-actions">
                           <div className="recommendation-card-buttons">
@@ -2549,7 +2558,7 @@ function App() {
                                 })
                               }
                             >
-                              <CalendarGlyph />
+                              <CalendarBlank size={20} weight="regular" aria-hidden />
                             </button>
                             <button
                               type="button"
@@ -2557,7 +2566,7 @@ function App() {
                               aria-label="Добавить в повестку"
                               onClick={() => addRecommendationToActiveGoal(item)}
                             >
-                              +
+                              <Plus size={20} weight="bold" aria-hidden />
                             </button>
                           </div>
                         </div>
@@ -2591,7 +2600,7 @@ function App() {
               }
             }}
           >
-            +
+            <Plus size={28} weight="bold" aria-hidden />
           </button>
         </section>
       )}
@@ -2599,8 +2608,9 @@ function App() {
       {!showProfile && activeTab === 'generate' && (
         <section className="screen screen--generate">
           <header className="screen-header">
-            <button className="text-button" onClick={() => setActiveTab('agenda')}>
-              ← Назад
+            <button type="button" className="text-button text-button--with-icon" onClick={() => setActiveTab('agenda')}>
+              <ArrowLeft size={18} weight="regular" aria-hidden />
+              Назад
             </button>
             <h1>{showGeneratedResult ? 'Результат' : 'Генерация'}</h1>
             <div />
@@ -2766,7 +2776,7 @@ function App() {
                             })
                           }
                         >
-                          <CalendarGlyph />
+                          <CalendarBlank size={20} weight="regular" aria-hidden />
                         </button>
                         <button
                           type="button"
@@ -2777,7 +2787,7 @@ function App() {
                           }
                           onClick={() => addGeneratedStepToAgendaAndRefill(step.id)}
                         >
-                          {genRowBusyId === step.id ? '…' : '+'}
+                          {genRowBusyId === step.id ? '…' : <Plus size={20} weight="bold" aria-hidden />}
                         </button>
                       </div>
                     </li>
@@ -2813,7 +2823,7 @@ function App() {
                         })
                       }
                     >
-                      <CalendarGlyph />
+                      <CalendarBlank size={20} weight="regular" aria-hidden />
                     </button>
                   </div>
                   <button
@@ -2823,7 +2833,7 @@ function App() {
                     disabled={isAddingOwnStep || !genCustomInput.trim()}
                     onClick={addOwnMicroStepToAgenda}
                   >
-                    {isAddingOwnStep ? '…' : '+'}
+                    {isAddingOwnStep ? '…' : <Plus size={20} weight="bold" aria-hidden />}
                   </button>
                 </div>
               )}
@@ -2843,8 +2853,8 @@ function App() {
           >
             <div className="date-picker-modal-head">
               <h2>Дата</h2>
-              <button type="button" className="icon-button" onClick={closeGeneratedDateEditor}>
-                ✕
+              <button type="button" className="icon-button" aria-label="Закрыть" onClick={closeGeneratedDateEditor}>
+                <X size={20} weight="regular" aria-hidden />
               </button>
             </div>
             <div className="task-modal-field">
@@ -2885,8 +2895,9 @@ function App() {
       {showProfile && (
         <section className="screen screen--profile">
           <header className="screen-header">
-            <button className="text-button" onClick={() => setShowProfile(false)}>
-              ← Повестка
+            <button type="button" className="text-button text-button--with-icon" onClick={() => setShowProfile(false)}>
+              <ArrowLeft size={18} weight="regular" aria-hidden />
+              Повестка
             </button>
             <h1>Настройки</h1>
             <div />
@@ -2909,20 +2920,34 @@ function App() {
 
       {!showProfile && (
         <nav className="tab-bar">
-          <button className={activeTab === 'agenda' ? 'active' : ''} onClick={() => setActiveTab('agenda')}>
-            ⚑ Повестка
+          <button
+            type="button"
+            className={activeTab === 'agenda' ? 'active' : ''}
+            onClick={() => setActiveTab('agenda')}
+          >
+            <span className="tab-bar-inner">
+              <ListBullets size={22} weight={activeTab === 'agenda' ? 'fill' : 'regular'} aria-hidden />
+              <span>Повестка</span>
+            </span>
           </button>
           <button
+            type="button"
             className={activeTab === 'generate' ? 'active' : ''}
             onClick={() => {
               beginNewGoalGeneration()
               setActiveTab('generate')
             }}
           >
-            ✨ Генерация
+            <span className="tab-bar-inner">
+              <Sparkle size={22} weight={activeTab === 'generate' ? 'fill' : 'regular'} aria-hidden />
+              <span>Генерация</span>
+            </span>
           </button>
-          <button className={activeTab === 'journal' ? 'active' : ''} onClick={() => setActiveTab('journal')}>
-            📊 Статистика
+          <button type="button" className={activeTab === 'journal' ? 'active' : ''} onClick={() => setActiveTab('journal')}>
+            <span className="tab-bar-inner">
+              <ChartBar size={22} weight={activeTab === 'journal' ? 'fill' : 'regular'} aria-hidden />
+              <span>Статистика</span>
+            </span>
           </button>
         </nav>
       )}
@@ -2938,8 +2963,8 @@ function App() {
           >
             <div className="task-modal-head">
               <h2>{taskEditor.mode === 'create' ? 'Новый микрошаг' : 'Микрошаг'}</h2>
-              <button type="button" className="icon-button" onClick={closeTaskEditor}>
-                ✕
+              <button type="button" className="icon-button" aria-label="Закрыть" onClick={closeTaskEditor}>
+                <X size={20} weight="regular" aria-hidden />
               </button>
             </div>
             <textarea

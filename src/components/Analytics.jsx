@@ -1,5 +1,16 @@
 import { useMemo, useState } from 'react'
 import {
+  CalendarBlank,
+  ChartBar,
+  Check,
+  Flame,
+  Lightbulb,
+  Star,
+  Tag,
+  Target,
+  TrendUp,
+} from '@phosphor-icons/react'
+import {
   ArcElement,
   BarElement,
   CategoryScale,
@@ -150,7 +161,7 @@ function getCompactChartEntries(dailyEntries) {
   return bucketEntriesByMonth(dailyEntries)
 }
 
-const INSIGHT_ICONS = ['📈', '⭐', '🎯', '🔥']
+const INSIGHT_ICON_COMPONENTS = [TrendUp, Star, Target, Flame]
 
 function Analytics({ goals, completedGoals, onClearHistory }) {
   const [range, setRange] = useState('month')
@@ -333,7 +344,7 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
       <div className="stats-range-row">
         <span className="stats-range-pill">
           <span className="stats-range-pill-icon" aria-hidden="true">
-            📅
+            <CalendarBlank size={16} weight="regular" />
           </span>
           {rangeCaption}
         </span>
@@ -344,7 +355,7 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
           <div className="stats-card-head">
             <h2 className="stats-card-title">
               <span className="stats-card-ico" aria-hidden="true">
-                🎯
+                <Target size={16} weight="regular" />
               </span>
               Общий прогресс
             </h2>
@@ -352,7 +363,7 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
           <div className="stats-progress-block">
             <div className="stats-progress-ring" style={{ '--progress': `${progress.percent}%` }}>
               <div className="stats-progress-ring-center">
-                <strong>{progress.percent}%</strong>
+                <span className="type-accent-number">{progress.percent}%</span>
               </div>
             </div>
             <div className="stats-progress-text">
@@ -369,7 +380,7 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
           <div className="stats-card-head">
             <h2 className="stats-card-title">
               <span className="stats-card-ico" aria-hidden="true">
-                🔥
+                <Flame size={16} weight="regular" />
               </span>
               Серия дней
             </h2>
@@ -384,7 +395,7 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
           <div className="stats-card-head">
             <h2 className="stats-card-title">
               <span className="stats-card-ico" aria-hidden="true">
-                📊
+                <ChartBar size={16} weight="regular" />
               </span>
               Средняя активность
             </h2>
@@ -401,7 +412,7 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
           <div className="stats-card-head stats-card-head--toolbar">
             <h2 className="stats-card-title">
               <span className="stats-card-ico" aria-hidden="true">
-                📅
+                <CalendarBlank size={16} weight="regular" />
               </span>
               Активность по дням
             </h2>
@@ -422,7 +433,7 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
           <div className="stats-card-head">
             <h2 className="stats-card-title">
               <span className="stats-card-ico" aria-hidden="true">
-                🏷️
+                <Tag size={16} weight="regular" />
               </span>
               Категории целей
             </h2>
@@ -460,7 +471,7 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
           <div className="stats-card-head">
             <h2 className="stats-card-title">
               <span className="stats-card-ico" aria-hidden="true">
-                ✅
+                <Check size={16} weight="bold" />
               </span>
               Последние выполненные
             </h2>
@@ -474,7 +485,9 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
               {recentCompleted.map(goal => (
                 <div key={goal.id} className="stats-recent-row">
                   <div className="stats-recent-main">
-                    <span className="stats-recent-check">✓</span>
+                    <span className="stats-recent-check">
+                      <Check size={14} weight="bold" aria-hidden />
+                    </span>
                     <div>
                       <strong>{goal.title}</strong>
                       <p className="secondary-text">{goal.category}</p>
@@ -496,20 +509,23 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
           <div className="stats-card-head">
             <h2 className="stats-card-title">
               <span className="stats-card-ico" aria-hidden="true">
-                💡
+                <Lightbulb size={16} weight="regular" />
               </span>
               Выводы и инсайты
             </h2>
           </div>
           <div className="stats-insights-list">
-            {insights.map((text, index) => (
-              <div key={text} className="stats-insight-row">
-                <span className="stats-insight-icon" aria-hidden="true">
-                  {INSIGHT_ICONS[index % INSIGHT_ICONS.length]}
-                </span>
-                <p>{text}</p>
-              </div>
-            ))}
+            {insights.map((text, index) => {
+              const InsightIcon = INSIGHT_ICON_COMPONENTS[index % INSIGHT_ICON_COMPONENTS.length]
+              return (
+                <div key={text} className="stats-insight-row">
+                  <span className="stats-insight-icon" aria-hidden="true">
+                    <InsightIcon size={18} weight="regular" />
+                  </span>
+                  <p>{text}</p>
+                </div>
+              )
+            })}
           </div>
         </article>
       </div>
