@@ -194,9 +194,12 @@ function normalizeMicroGoal(item, index, existingMicroGoals = []) {
   const recommendedDate =
     normalizeIsoDate(item.recommendedDate) || inferRecommendedDate(checkpointOrder, existingMicroGoals)
 
+  const completed = Boolean(item.completed)
+  const rawAt = String(item.completedAt || '').trim()
   return {
     ...item,
-    completed: Boolean(item.completed),
+    completed,
+    completedAt: completed ? rawAt || null : null,
     suggested: Boolean(item.suggested),
     checkpointOrder,
     recommendedDate,
@@ -1047,15 +1050,24 @@ function App() {
     const target = goal.microGoals.find(m => m.id === microId)
     if (!target || target.completed === nextCompleted) return
 
-    const microGoals = goal.microGoals.map(item =>
-      item.id === microId ? { ...item, completed: nextCompleted } : item
-    )
+    const microGoals = goal.microGoals.map(item => {
+      if (item.id !== microId) return item
+      if (nextCompleted) {
+        return { ...item, completed: true, completedAt: new Date().toISOString() }
+      }
+      return { ...item, completed: false, completedAt: null }
+    })
     const updatedGoal = { ...goal, microGoals }
     const allDone = microGoals.length > 0 && microGoals.every(item => item.completed)
 
     if (allDone) {
       const finishedAt = new Date().toISOString()
-      const finishedGoal = { ...updatedGoal, finishedAt, completedAt: finishedAt }
+      const finalizedMicro = microGoals.map(m => ({
+        ...m,
+        completed: true,
+        completedAt: m.completedAt || finishedAt,
+      }))
+      const finishedGoal = { ...updatedGoal, microGoals: finalizedMicro, finishedAt, completedAt: finishedAt }
       if (hasAccountAccess) {
         const savedFinishedGoal = normalizeGoal(
           await apiRequest('/api/completed-goals', {

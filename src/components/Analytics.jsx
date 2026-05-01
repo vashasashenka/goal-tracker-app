@@ -1,17 +1,5 @@
 import { useMemo, useState } from 'react'
 import {
-  CalendarBlank,
-  ChartBar,
-  Check,
-  Flame,
-  Lightbulb,
-  Star,
-  Tag,
-  Target,
-  TrendUp,
-} from '@phosphor-icons/react'
-import {
-  ArcElement,
   BarElement,
   CategoryScale,
   Chart as ChartJS,
@@ -19,23 +7,24 @@ import {
   LinearScale,
   Tooltip,
 } from 'chart.js'
-import { Bar, Doughnut } from 'react-chartjs-2'
+import { Bar } from 'react-chartjs-2'
 import {
+  countDaysInclusive,
   filterGoals,
-  formatDaysLabel,
-  formatGoalsPerDayLabel,
   generateInsights,
-  getAveragePerDay,
-  getBestDay,
-  getCategoryStats,
-  getDailyStats,
-  getProgress,
+  getAvgMicroPerDayInBounds,
+  getBestWeekdayMicroFromGoals,
+  getMaxMicroCompletionsPerDayInBounds,
+  getMicroBarPercent,
+  getMicroDailyDetailMap,
+  getMicroDeltaPercentVersusPreviousPeriod,
+  getMicroProgressForScopedGoals,
+  getMicroStreakDays,
   getRecentCompleted,
-  getStreak,
   normalizeGoalForStats,
 } from '../utils/statistics'
 
-ChartJS.register(ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement)
+ChartJS.register(Tooltip, Legend, CategoryScale, LinearScale, BarElement)
 
 const RANGE_OPTIONS = [
   { id: 'week', label: 'Неделя' },
@@ -44,12 +33,7 @@ const RANGE_OPTIONS = [
   { id: 'all', label: 'Все время' },
 ]
 
-const CATEGORY_COLORS = {
-  Учёба: '#3d6df2',
-  Работа: '#8a5cf6',
-  Личное: '#f6be4f',
-  Другое: '#57b26a',
-}
+const DOW_SHORT = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб']
 
 function formatDashboardDate(value) {
   const date = value ? new Date(value) : null
@@ -82,6 +66,15 @@ function addDays(dateLike, days) {
   if (!date) return null
   date.setDate(date.getDate() + Number(days || 0))
   return date
+}
+
+function toLocalDateKey(value) {
+  const date = value ? new Date(value) : null
+  if (!date || Number.isNaN(date.getTime())) return ''
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
 }
 
 function getRangeBounds(range, goals, now = new Date()) {
@@ -125,7 +118,6 @@ function getRangeDates(bounds, limit = 500) {
   return dates
 }
 
-/** Компактный график: до ~31 столбца по дням, иначе сумма по месяцам (как на референсе). */
 function formatMonthBucketLabel(ym) {
   const [y, m] = ym.split('-').map(Number)
   if (!Number.isFinite(y) || !Number.isFinite(m)) return ym
@@ -144,13 +136,17 @@ function bucketEntriesByMonth(entries) {
   for (const item of entries) {
     const ym = String(item.date || '').slice(0, 7)
     if (!/^\d{4}-\d{2}$/.test(ym)) continue
-    map.set(ym, (map.get(ym) || 0) + (Number(item.count) || 0))
+    const prev = map.get(ym) || { count: 0, steps: [] }
+    prev.count += Number(item.count) || 0
+    prev.steps.push(...(item.steps || []))
+    map.set(ym, prev)
   }
   return Array.from(map.entries())
     .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([ym, count]) => ({
+    .map(([ym, bucket]) => ({
       date: `${ym}-01`,
-      count,
+      count: bucket.count,
+      steps: bucket.steps,
       label: formatMonthBucketLabel(ym),
     }))
 }
@@ -161,7 +157,24 @@ function getCompactChartEntries(dailyEntries) {
   return bucketEntriesByMonth(dailyEntries)
 }
 
-const INSIGHT_ICON_COMPONENTS = [TrendUp, Star, Target, Flame]
+function buildLastWeekStrip(now, completionKeys) {
+  const end = startOfDay(now)
+  if (!end) return []
+  const set = completionKeys instanceof Set ? completionKeys : new Set(completionKeys)
+  const out = []
+  for (let i = 6; i >= 0; i -= 1) {
+    const d = new Date(end)
+    d.setDate(d.getDate() - i)
+    const key = toLocalDateKey(d)
+    const dow = d.getDay()
+    out.push({
+      key,
+      label: DOW_SHORT[dow],
+      on: set.has(key),
+    })
+  }
+  return out
+}
 
 function Analytics({ goals, completedGoals, onClearHistory }) {
   const [range, setRange] = useState('month')
@@ -175,48 +188,87 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
   )
 
   const filteredGoals = useMemo(() => filterGoals(statGoals, range), [statGoals, range])
-  const progress = useMemo(() => getProgress(filteredGoals), [filteredGoals])
-  const streak = useMemo(() => getStreak(filteredGoals), [filteredGoals])
-  const dailyStats = useMemo(() => getDailyStats(filteredGoals), [filteredGoals])
-  const categoryStats = useMemo(() => getCategoryStats(filteredGoals), [filteredGoals])
+  const rangeBounds = useMemo(() => getRangeBounds(range, statGoals), [statGoals, range])
+  const rangeCaption = useMemo(() => getRangeCaption(range, rangeBounds), [range, rangeBounds])
+
+  const microDaily = useMemo(
+    () => getMicroDailyDetailMap(statGoals, rangeBounds),
+    [statGoals, rangeBounds]
+  )
+
+  const microProgress = useMemo(
+    () => getMicroProgressForScopedGoals(statGoals, rangeBounds),
+    [statGoals, rangeBounds]
+  )
+
+  const microStreak = useMemo(() => getMicroStreakDays(statGoals), [statGoals])
+
+  const avgMicro = useMemo(() => getAvgMicroPerDayInBounds(statGoals, rangeBounds), [statGoals, rangeBounds])
+  const maxMicroDay = useMemo(
+    () => getMaxMicroCompletionsPerDayInBounds(statGoals, rangeBounds),
+    [statGoals, rangeBounds]
+  )
+  const barPct = useMemo(() => getMicroBarPercent(avgMicro, maxMicroDay), [avgMicro, maxMicroDay])
+
+  const deltaPercent = useMemo(
+    () =>
+      range !== 'all' && rangeBounds?.start && rangeBounds?.end
+        ? getMicroDeltaPercentVersusPreviousPeriod(statGoals, rangeBounds)
+        : null,
+    [range, rangeBounds, statGoals]
+  )
+
   const recentCompleted = useMemo(() => getRecentCompleted(filteredGoals), [filteredGoals])
-  const bestDay = useMemo(() => getBestDay(filteredGoals), [filteredGoals])
-  const averagePerDay = useMemo(() => getAveragePerDay(filteredGoals), [filteredGoals])
+  const bestMicroDay = useMemo(
+    () => getBestWeekdayMicroFromGoals(statGoals, rangeBounds),
+    [statGoals, rangeBounds]
+  )
+
+  const completionKeysForStrip = useMemo(() => {
+    const s = new Set()
+    for (const g of statGoals) {
+      const steps = g.steps || []
+      for (const step of steps) {
+        if (!step.completed || !step.completedAt) continue
+        const k = toLocalDateKey(step.completedAt)
+        if (k) s.add(k)
+      }
+    }
+    return s
+  }, [statGoals])
+
+  const weekStrip = useMemo(() => buildLastWeekStrip(new Date(), completionKeysForStrip), [completionKeysForStrip])
 
   const insights = useMemo(
     () =>
       generateInsights({
-        bestDay,
-        avg: averagePerDay,
-        streak,
-        progress,
+        bestMicroDay,
+        avgMicro,
+        microStreak,
+        microProgress,
       }),
-    [averagePerDay, bestDay, progress, streak]
+    [avgMicro, bestMicroDay, microProgress, microStreak]
   )
 
-  const rangeBounds = useMemo(() => getRangeBounds(range, filteredGoals), [filteredGoals, range])
-  const rangeCaption = useMemo(() => getRangeCaption(range, rangeBounds), [range, rangeBounds])
-
-  const dailyEntries = useMemo(
-    () => {
-      const keys = getRangeDates(rangeBounds)
-      if (keys.length > 0) {
-        return keys.map(date => ({
-          date,
-          count: Number(dailyStats[date] || 0),
-          label: formatChartLabel(date),
-        }))
-      }
-      return Object.entries(dailyStats)
-        .sort((a, b) => a[0].localeCompare(b[0]))
-        .map(([date, count]) => ({
-          date,
-          count,
-          label: formatChartLabel(date),
-        }))
-    },
-    [dailyStats, rangeBounds]
-  )
+  const dailyEntries = useMemo(() => {
+    const keys = getRangeDates(rangeBounds)
+    if (keys.length > 0) {
+      return keys.map(date => ({
+        date,
+        count: Number(microDaily[date]?.count || 0),
+        steps: microDaily[date]?.steps || [],
+        label: formatChartLabel(date),
+      }))
+    }
+    return Object.keys(microDaily)
+      .sort()
+      .map(date => ({
+        date,
+        count: microDaily[date].count,
+        steps: microDaily[date].steps,
+        label: formatChartLabel(date),
+      }))
+  }, [microDaily, rangeBounds])
 
   const chartEntries = useMemo(() => getCompactChartEntries(dailyEntries), [dailyEntries])
 
@@ -225,7 +277,7 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
       labels: chartEntries.map(item => item.label),
       datasets: [
         {
-          label: 'Завершённые цели',
+          label: 'Микрошаги',
           data: chartEntries.map(item => item.count),
           backgroundColor: '#3d6df2',
           borderRadius: 10,
@@ -246,7 +298,22 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
         tooltip: {
           displayColors: false,
           callbacks: {
-            label: context => `${context.parsed.y} завершено`,
+            title: items => (items[0] ? items[0].label : ''),
+            label: item => {
+              const n = item.parsed.y
+              if (!Number.isFinite(n) || n <= 0) return 'Нет завершённых микрошагов с датой'
+              return `Микрошагов: ${n}`
+            },
+            afterBody: items => {
+              const idx = items[0]?.dataIndex
+              if (idx == null) return []
+              const steps = chartEntries[idx]?.steps || []
+              if (!steps.length) return []
+              const max = 12
+              const lines = steps.slice(0, max).map(t => `· ${t}`)
+              if (steps.length > max) lines.push(`… и ещё ${steps.length - max}`)
+              return lines
+            },
           },
         },
       },
@@ -275,47 +342,14 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
         },
       },
     }),
-    []
+    [chartEntries]
   )
 
-  const categoryChartData = useMemo(
-    () => ({
-      labels: categoryStats.map(item => item.category),
-      datasets: [
-        {
-          data: categoryStats.map(item => item.count),
-          backgroundColor: categoryStats.map(item => CATEGORY_COLORS[item.category]),
-          borderWidth: 0,
-          hoverOffset: 6,
-        },
-      ],
-    }),
-    [categoryStats]
-  )
-
-  const categoryChartOptions = useMemo(
-    () => ({
-      responsive: true,
-      maintainAspectRatio: false,
-      cutout: '62%',
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          callbacks: {
-            label: context => {
-              const percent = categoryStats[context.dataIndex]?.percent ?? 0
-              return `${context.label}: ${context.parsed} (${percent}%)`
-            },
-          },
-        },
-      },
-    }),
-    [categoryStats]
-  )
-
-  const hasDailyData = chartEntries.length > 0
-  const hasCategoryData = categoryStats.some(item => item.count > 0)
+  const hasDailyData = chartEntries.some(e => e.count > 0)
   const hasAnyGoals = statGoals.length > 0
+  const daysInRange = countDaysInclusive(rangeBounds)
+  const avgLabel =
+    daysInRange > 0 ? `${avgMicro.toFixed(1).replace('.', ',')} за день` : '—'
 
   return (
     <section className="screen screen--journal journal-screen stats-screen">
@@ -323,7 +357,7 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
         <div>
           <h1>Статистика выполнения целей</h1>
           <p className="secondary-text stats-screen-copy">
-            Анализируйте свой прогресс и достигайте большего
+            Микрошаги и прогресс по выбранному периоду
           </p>
         </div>
       </header>
@@ -342,156 +376,112 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
       </div>
 
       <div className="stats-range-row">
-        <span className="stats-range-pill">
-          <span className="stats-range-pill-icon" aria-hidden="true">
-            <CalendarBlank size={16} weight="regular" />
-          </span>
-          {rangeCaption}
-        </span>
+        <span className="stats-range-pill">{rangeCaption}</span>
       </div>
 
       <div className="stats-summary-grid">
         <article className="card stats-card stats-card--progress">
           <div className="stats-card-head">
-            <h2 className="stats-card-title">
-              <span className="stats-card-ico" aria-hidden="true">
-                <Target size={16} weight="regular" />
-              </span>
-              Общий прогресс
-            </h2>
+            <h2 className="stats-card-title">Общий прогресс</h2>
           </div>
           <div className="stats-progress-block">
-            <div className="stats-progress-ring" style={{ '--progress': `${progress.percent}%` }}>
+            <div className="stats-progress-ring" style={{ '--progress': `${microProgress.percent}%` }}>
               <div className="stats-progress-ring-center">
-                <span className="type-accent-number">{progress.percent}%</span>
+                <span className="type-accent-number">{microProgress.percent}%</span>
               </div>
             </div>
             <div className="stats-progress-text">
               <span className="secondary-text">Выполнено</span>
               <strong>
-                {progress.completed} из {progress.total}
+                {microProgress.completed} из {microProgress.total}
               </strong>
-              <small>целей</small>
+              <small>микрошагов в целях периода</small>
             </div>
           </div>
+          {range !== 'all' && deltaPercent != null && (
+            <div className="stats-card-footer">
+              <p className={`stats-card-delta ${deltaPercent >= 0 ? 'stats-card-delta--up' : 'stats-card-delta--down'}`}>
+                {deltaPercent >= 0 ? '+' : ''}
+                {deltaPercent}% микрошагов к прошлому такому же периоду
+              </p>
+            </div>
+          )}
         </article>
 
         <article className="card stats-card">
           <div className="stats-card-head">
-            <h2 className="stats-card-title">
-              <span className="stats-card-ico" aria-hidden="true">
-                <Flame size={16} weight="regular" />
-              </span>
-              Серия дней
-            </h2>
+            <h2 className="stats-card-title">Серия дней</h2>
           </div>
-          <div className="stats-big-number">{streak}</div>
+          <div className="stats-streak-main">
+            <span className="stats-big-number">{microStreak}</span>
+            <span className="secondary-text stats-streak-suffix">
+              {microStreak > 0 ? 'дней подряд' : 'пока без серии'}
+            </span>
+          </div>
+          <div className="stats-streak-week" aria-hidden="true">
+            {weekStrip.map(d => (
+              <div key={d.key} className="stats-streak-day">
+                <span className={`stats-streak-dot ${d.on ? 'stats-streak-dot--on' : ''}`} />
+                <span className="stats-streak-dow">{d.label}</span>
+              </div>
+            ))}
+          </div>
           <p className="secondary-text stats-card-foot">
-            {streak > 0 ? `${formatDaysLabel(streak)} подряд` : 'Пока нет активной серии'}
+            День засчитывается, если отмечен хотя бы один микрошаг с датой выполнения.
           </p>
         </article>
 
         <article className="card stats-card">
           <div className="stats-card-head">
-            <h2 className="stats-card-title">
-              <span className="stats-card-ico" aria-hidden="true">
-                <ChartBar size={16} weight="regular" />
-              </span>
-              Средняя активность
-            </h2>
+            <h2 className="stats-card-title">Средний прогресс</h2>
           </div>
-          <div className="stats-big-number">{averagePerDay}</div>
+          <div className="stats-avg-head">
+            <span className="type-accent-number stats-avg-pct">{barPct}%</span>
+            <p className="secondary-text stats-avg-sub">к лучшему дню в периоде</p>
+          </div>
+          <div className="stats-avg-bar" aria-hidden="true">
+            <span style={{ width: `${barPct}%` }} />
+          </div>
           <p className="secondary-text stats-card-foot">
-            {averagePerDay > 0 ? formatGoalsPerDayLabel(averagePerDay) : 'Нет завершений для расчёта'}
+            {maxMicroDay > 0
+              ? `${avgLabel} · лучший день: ${maxMicroDay} микрошаг.`
+              : 'Завершите микрошаги — появится сравнение с лучшим днём.'}
           </p>
         </article>
       </div>
 
-      <div className="stats-main-grid">
-        <article className="card stats-panel stats-panel--wide">
-          <div className="stats-card-head stats-card-head--toolbar">
-            <h2 className="stats-card-title">
-              <span className="stats-card-ico" aria-hidden="true">
-                <CalendarBlank size={16} weight="regular" />
-              </span>
-              Активность по дням
-            </h2>
-            <span className="stats-chart-metric-pill">Завершённые цели</span>
+      <article className="card stats-panel stats-panel--wide stats-panel--activity">
+        <div className="stats-card-head stats-card-head--toolbar">
+          <h2 className="stats-card-title">Активность</h2>
+          <span className="stats-chart-metric-pill">Завершённые микрошаги по дням</span>
+        </div>
+        {!hasDailyData ? (
+          <p className="secondary-text stats-empty-text">
+            Здесь появятся столбцы по дням, когда у отмеченных микрошагов будет дата выполнения. Наведите на
+            столбец — список шагов.
+          </p>
+        ) : (
+          <div className="stats-chart-wrap">
+            <Bar data={dailyChartData} options={dailyChartOptions} />
           </div>
-          {!hasDailyData ? (
-            <p className="secondary-text stats-empty-text">
-              Когда появятся завершённые цели, здесь сформируется график активности по дням.
-            </p>
-          ) : (
-            <div className="stats-chart-wrap">
-              <Bar data={dailyChartData} options={dailyChartOptions} />
-            </div>
-          )}
-        </article>
-
-        <article className="card stats-panel">
-          <div className="stats-card-head">
-            <h2 className="stats-card-title">
-              <span className="stats-card-ico" aria-hidden="true">
-                <Tag size={16} weight="regular" />
-              </span>
-              Категории целей
-            </h2>
-          </div>
-          {!hasCategoryData ? (
-            <p className="secondary-text stats-empty-text">
-              Пока нет целей в выбранном периоде, поэтому круговая диаграмма ещё пустая.
-            </p>
-          ) : (
-            <div className="stats-category-layout">
-              <div className="stats-category-chart">
-                <Doughnut data={categoryChartData} options={categoryChartOptions} />
-              </div>
-              <div className="stats-category-legend">
-                {categoryStats.map(item => (
-                  <div key={item.category} className="stats-category-row">
-                    <span className="stats-category-meta">
-                      <span
-                        className="stats-category-dot"
-                        style={{ backgroundColor: CATEGORY_COLORS[item.category] }}
-                      />
-                      {item.category}
-                    </span>
-                    <strong>{item.percent}%</strong>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </article>
-      </div>
+        )}
+      </article>
 
       <div className="stats-bottom-grid">
         <article className="card stats-panel">
           <div className="stats-card-head">
-            <h2 className="stats-card-title">
-              <span className="stats-card-ico" aria-hidden="true">
-                <Check size={16} weight="bold" />
-              </span>
-              Последние выполненные
-            </h2>
+            <h2 className="stats-card-title">Последние выполненные цели</h2>
           </div>
           {recentCompleted.length === 0 ? (
             <p className="secondary-text stats-empty-text">
-              В выбранном периоде пока нет завершённых целей.
+              В выбранном периоде пока нет завершённых целей целиком.
             </p>
           ) : (
             <div className="stats-recent-list">
               {recentCompleted.map(goal => (
                 <div key={goal.id} className="stats-recent-row">
                   <div className="stats-recent-main">
-                    <span className="stats-recent-check">
-                      <Check size={14} weight="bold" aria-hidden />
-                    </span>
-                    <div>
-                      <strong>{goal.title}</strong>
-                      <p className="secondary-text">{goal.category}</p>
-                    </div>
+                    <strong>{goal.title}</strong>
                   </div>
                   <span className="stats-recent-date">{formatDashboardDate(goal.completedAt)}</span>
                 </div>
@@ -507,25 +497,18 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
 
         <article className="card stats-panel">
           <div className="stats-card-head">
-            <h2 className="stats-card-title">
-              <span className="stats-card-ico" aria-hidden="true">
-                <Lightbulb size={16} weight="regular" />
-              </span>
-              Выводы и инсайты
-            </h2>
+            <h2 className="stats-card-title">Выводы и инсайты</h2>
           </div>
+          <p className="secondary-text stats-insights-source">
+            Короткие выводы считаются в приложении из ваших целей и микрошагов, без отдельной базы только для
+            текстов.
+          </p>
           <div className="stats-insights-list">
-            {insights.map((text, index) => {
-              const InsightIcon = INSIGHT_ICON_COMPONENTS[index % INSIGHT_ICON_COMPONENTS.length]
-              return (
-                <div key={text} className="stats-insight-row">
-                  <span className="stats-insight-icon" aria-hidden="true">
-                    <InsightIcon size={18} weight="regular" />
-                  </span>
-                  <p>{text}</p>
-                </div>
-              )
-            })}
+            {insights.map((text, i) => (
+              <div key={`${i}-${text.slice(0, 24)}`} className="stats-insight-row">
+                <p>{text}</p>
+              </div>
+            ))}
           </div>
         </article>
       </div>

@@ -155,10 +155,14 @@ export function resolveGoalCreatedAt(goal) {
 }
 
 function normalizeStep(step, index) {
+  const completed = Boolean(step?.completed)
+  const completedAt =
+    completed && step?.completedAt ? String(step.completedAt).trim() || null : null
   return {
     id: String(step?.id ?? `step-${index}`),
     title: String(step?.title ?? step?.text ?? '').trim() || `Шаг ${index + 1}`,
-    completed: Boolean(step?.completed),
+    completed,
+    completedAt,
   }
 }
 
@@ -255,6 +259,172 @@ export function getDailyStats(goals) {
   return stats
 }
 
+export function countDaysInclusive(bounds) {
+  if (!bounds?.start || !bounds?.end) return 0
+  const a = startOfDay(bounds.start)
+  const b = startOfDay(bounds.end)
+  if (!a || !b) return 0
+  return Math.round((b.getTime() - a.getTime()) / 86400000) + 1
+}
+
+export function goalExistsDuringStatsRange(goal, bounds) {
+  if (!bounds?.start || !bounds?.end) return true
+  const startD = startOfDay(bounds.start)
+  const endD = startOfDay(bounds.end)
+  if (!startD || !endD) return true
+  const created = startOfDay(normalizeDate(goal.createdAt))
+  const finishedRaw = normalizeDate(goal.completedAt)
+  const finishedDay = finishedRaw ? startOfDay(finishedRaw) : null
+  if (!created || created.getTime() > endD.getTime()) return false
+  if (finishedDay && finishedDay.getTime() < startD.getTime()) return false
+  return true
+}
+
+export function getMicroProgressForScopedGoals(goals, bounds) {
+  const scoped = bounds?.start && bounds?.end
+    ? goals.filter(g => goalExistsDuringStatsRange(g, bounds))
+    : [...goals]
+  let total = 0
+  let completed = 0
+  for (const g of scoped) {
+    for (const s of getGoalRawSteps(g)) {
+      total += 1
+      if (s.completed) completed += 1
+    }
+  }
+  const percent = total === 0 ? 0 : Math.round((completed / total) * 100)
+  return { completed, total, percent }
+}
+
+export function getMicroCompletionsInRange(goals, bounds) {
+  if (!bounds?.start || !bounds?.end) return 0
+  const a = toLocalDateKey(bounds.start)
+  const b = toLocalDateKey(bounds.end)
+  if (!a || !b) return 0
+  let n = 0
+  for (const g of goals) {
+    for (const s of getGoalRawSteps(g)) {
+      if (!s.completed || !s.completedAt) continue
+      const k = toLocalDateKey(s.completedAt)
+      if (k && k >= a && k <= b) n += 1
+    }
+  }
+  return n
+}
+
+export function getMicroDailyDetailMap(goals, bounds) {
+  const map = Object.create(null)
+  const a = bounds?.start && bounds?.end ? toLocalDateKey(bounds.start) : null
+  const b = bounds?.start && bounds?.end ? toLocalDateKey(bounds.end) : null
+  for (const g of goals) {
+    const goalTitle = getGoalRawTitle(g)
+    for (const s of getGoalRawSteps(g)) {
+      if (!s.completed || !s.completedAt) continue
+      const k = toLocalDateKey(s.completedAt)
+      if (!k) continue
+      if (a && b && (k < a || k > b)) continue
+      if (!map[k]) map[k] = { count: 0, steps: [] }
+      map[k].count += 1
+      const label = String(s.title || s.text || '').trim() || 'Шаг'
+      map[k].steps.push(`${label} · ${goalTitle}`)
+    }
+  }
+  return map
+}
+
+export function getMicroStreakDays(goals, now = new Date()) {
+  const dates = new Set()
+  for (const g of goals) {
+    for (const s of getGoalRawSteps(g)) {
+      if (!s.completed || !s.completedAt) continue
+      const k = toLocalDateKey(s.completedAt)
+      if (k) dates.add(k)
+    }
+  }
+  let streak = 0
+  const cursor = startOfDay(now)
+  if (!cursor) return 0
+  const current = new Date(cursor)
+  for (;;) {
+    const key = toLocalDateKey(current)
+    if (!key) break
+    if (dates.has(key)) {
+      streak += 1
+      current.setDate(current.getDate() - 1)
+    } else break
+  }
+  return streak
+}
+
+export function getAvgMicroPerDayInBounds(goals, bounds) {
+  const total = getMicroCompletionsInRange(goals, bounds)
+  const days = countDaysInclusive(bounds)
+  if (days <= 0) return 0
+  return total / days
+}
+
+export function getMaxMicroCompletionsPerDayInBounds(goals, bounds) {
+  const map = getMicroDailyDetailMap(goals, bounds)
+  let m = 0
+  for (const k of Object.keys(map)) {
+    m = Math.max(m, map[k].count)
+  }
+  return m
+}
+
+export function getMicroBarPercent(avgPerDay, maxPerDay) {
+  if (!maxPerDay || maxPerDay <= 0) return 0
+  return Math.min(100, Math.round((avgPerDay / maxPerDay) * 100))
+}
+
+function shiftBoundsBackByLength(bounds) {
+  if (!bounds?.start || !bounds?.end) return null
+  const len = countDaysInclusive(bounds)
+  if (len <= 0) return null
+  const s = new Date(bounds.start)
+  const e = new Date(bounds.end)
+  s.setDate(s.getDate() - len)
+  e.setDate(e.getDate() - len)
+  const start = startOfDay(s)
+  const end = startOfDay(e)
+  return start && end ? { start, end } : null
+}
+
+export function getMicroDeltaPercentVersusPreviousPeriod(goals, bounds) {
+  const prev = shiftBoundsBackByLength(bounds)
+  if (!prev?.start || !prev?.end) return null
+  const cur = getMicroCompletionsInRange(goals, bounds)
+  const p = getMicroCompletionsInRange(goals, prev)
+  if (p === 0) return cur > 0 ? null : 0
+  return Math.round(((cur - p) / p) * 100)
+}
+
+export function getBestWeekdayMicroFromGoals(goals, bounds) {
+  const days = {}
+  for (const g of goals) {
+    for (const s of getGoalRawSteps(g)) {
+      if (!s.completed || !s.completedAt) continue
+      const k = toLocalDateKey(s.completedAt)
+      if (!k) continue
+      if (bounds?.start && bounds?.end) {
+        const a = toLocalDateKey(bounds.start)
+        const b = toLocalDateKey(bounds.end)
+        if (k < a || k > b) continue
+      }
+      const day = new Date(`${k}T12:00:00`).getDay()
+      days[day] = (days[day] || 0) + 1
+    }
+  }
+  const best = Object.entries(days).sort((a, b) => Number(b[1]) - Number(a[1]))[0]
+  if (!best) return null
+  const dayIndex = Number(best[0])
+  return {
+    dayIndex,
+    count: Number(best[1]),
+    label: WEEKDAY_LABELS[dayIndex] || 'этот день',
+  }
+}
+
 export function getCategoryStats(goals) {
   const counts = Object.fromEntries(GOAL_CATEGORIES.map(category => [category, 0]))
 
@@ -327,18 +497,20 @@ export function formatGoalsPerDayLabel(count) {
 }
 
 export function generateInsights(data) {
+  const avgMicro =
+    typeof data.avgMicro === 'number' ? data.avgMicro.toFixed(1).replace('.', ',') : '0'
   return [
-    data.bestDay
-      ? `Ты чаще всего выполняешь цели по ${data.bestDay.byLabel}.`
-      : 'Пока не хватает завершённых целей, чтобы определить самый продуктивный день.',
-    data.avg > 0
-      ? `Средняя активность: ${formatGoalsPerDayLabel(data.avg)}.`
-      : 'Средняя активность появится после первых завершённых целей.',
-    data.streak > 0
-      ? `Серия: ${formatDaysLabel(data.streak)} подряд.`
-      : 'Серия пока не началась — заверши цель сегодня, чтобы запустить streak.',
-    data.progress.total > 0
-      ? `Общий прогресс: ${data.progress.completed} из ${data.progress.total}.`
-      : 'Добавь цели, чтобы система начала рассчитывать прогресс.',
+    data.bestMicroDay
+      ? `Чаще всего вы закрываете микрошаги в ${data.bestMicroDay.label}.`
+      : 'Пока мало завершённых микрошагов с датой — картина по дням недели проявится позже.',
+    data.avgMicro > 0
+      ? `В среднем за день в выбранном периоде: ${avgMicro} микрошага.`
+      : 'Средняя активность по микрошагам появится после первых отметок «выполнено».',
+    data.microStreak > 0
+      ? `Серия по микрошагам: ${formatDaysLabel(data.microStreak)} подряд.`
+      : 'Серия по микрошагам начнётся, если выполнять хотя бы один шаг каждый день.',
+    data.microProgress?.total > 0
+      ? `В целях выбранного периода: ${data.microProgress.completed} из ${data.microProgress.total} микрошагов закрыто.`
+      : 'Добавьте цели и шаги — появится сводный прогресс.',
   ]
 }

@@ -1876,6 +1876,109 @@ small,
   line-height: 1.45;
 }
 
+.stats-streak-main {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.stats-streak-suffix {
+  font-size: 14px;
+}
+
+.stats-streak-week {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--divider);
+}
+
+.stats-streak-day {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.stats-streak-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #e2e8f0;
+}
+
+.stats-streak-dot--on {
+  background: var(--accent);
+}
+
+.stats-streak-dow {
+  font-size: 10px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.stats-avg-head {
+  margin-bottom: 10px;
+}
+
+.stats-avg-pct {
+  font-size: 48px;
+  display: block;
+  line-height: 1;
+}
+
+.stats-avg-sub {
+  margin: 6px 0 0;
+  font-size: 13px;
+}
+
+.stats-avg-bar {
+  height: 10px;
+  border-radius: 999px;
+  background: #edf2fa;
+  overflow: hidden;
+}
+
+.stats-avg-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #2f6fed 0%, #5a8cff 100%);
+  transition: width 0.25s ease;
+}
+
+.stats-card-footer {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--divider);
+}
+
+.stats-card-delta {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.stats-card-delta--up {
+  color: var(--success);
+}
+
+.stats-card-delta--down {
+  color: #b42318;
+}
+
+.stats-insights-source {
+  margin: -4px 0 12px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .stats-panel {
   display: flex;
   flex-direction: column;
@@ -1955,6 +2058,7 @@ small,
   align-items: flex-start;
   gap: 10px;
   min-width: 0;
+  flex: 1;
 }
 
 .stats-recent-main strong {
@@ -2205,10 +2309,6 @@ small,
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .stats-category-layout {
-    grid-template-columns: minmax(160px, 220px) minmax(0, 1fr);
-  }
-
   .stats-bottom-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -2281,15 +2381,6 @@ small,
   .fab {
     right: max(calc((100vw - min(1280px, 100vw)) / 2 + 24px), 24px);
     bottom: 108px;
-  }
-
-  .stats-main-grid {
-    grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.9fr);
-    align-items: stretch;
-  }
-
-  .stats-panel--wide {
-    min-height: 0;
   }
 
   .tab-bar {
