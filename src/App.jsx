@@ -32,15 +32,23 @@ async function parseApiErrorMessage(response) {
 const ACTIVE_GOAL_KEY = 'goal_tracker_active_goal_id'
 const GOALS_KEY = 'goal_tracker_goals'
 const COMPLETED_GOALS_KEY = 'goal_tracker_completed_goals'
+const RECENT_GENERATIONS_KEY = 'goal_tracker_recent_generations'
 const PROFILE_ID_KEY = 'goal_tracker_profile_id'
 const USER_NAME_KEY = 'goal_tracker_user_name'
 const USER_EMAIL_KEY = 'goal_tracker_user_email'
 const AUTH_TOKEN_KEY = 'goal_tracker_auth_token'
 const RESET_CODE_LENGTH = 6
+const GENERATION_INPUT_LIMIT = 300
 
 /** Сколько подсказок ИИ держим на экране (после добавления одной — дозаполняем до этого числа). */
 const AI_SUGGEST_SLOTS = 3
 const CHECKPOINT_GAP_DAYS = [3, 4, 7, 7, 14, 14, 21]
+const GENERATION_EXAMPLES = [
+  'Подготовиться к диплому',
+  'Начать бегать по утрам',
+  'Изучить английский',
+  'Прочитать книгу',
+]
 
 function normalizeEmail(email) {
   return String(email || '').trim().toLowerCase()
@@ -238,6 +246,17 @@ function formatRecommendedDate(dateStr, options = { day: 'numeric', month: 'shor
     .replace(/\./g, '')
 }
 
+function formatRecentGenerationDate(dateStr) {
+  const date = new Date(dateStr || Date.now())
+  if (Number.isNaN(date.getTime())) return 'только что'
+  return date.toLocaleString('ru-RU', {
+    day: 'numeric',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
 function isRecommendedDatePassed(task) {
   if (!task || task.completed) return false
   const parsed = parseIsoDate(task.recommendedDate)
@@ -311,6 +330,49 @@ function readScopedGoalList(baseKey, userKey) {
     const parsed = JSON.parse(raw)
     return Array.isArray(parsed)
       ? parsed.map(normalizeGoal).filter(item => item && Number.isFinite(Number(item.id)))
+      : []
+  } catch {
+    return []
+  }
+}
+
+function sanitizeRecentGenerationStep(step, index) {
+  const text = String(step?.text || step?.title || '').trim()
+  if (!text) return null
+  return {
+    id: String(step?.id ?? `recent-step-${index}`),
+    text,
+    recommendedDate: normalizeIsoDate(step?.recommendedDate),
+    recommendedOffsetDays: Number.isFinite(Number(step?.recommendedOffsetDays))
+      ? Math.max(0, Math.trunc(Number(step.recommendedOffsetDays)))
+      : null,
+    checkpointOrder: Number.isFinite(Number(step?.checkpointOrder))
+      ? Math.max(1, Math.trunc(Number(step.checkpointOrder)))
+      : null,
+  }
+}
+
+function readScopedRecentGenerations(userKey) {
+  const raw = localStorage.getItem(makeScopedStorageKey(RECENT_GENERATIONS_KEY, userKey))
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed)
+      ? parsed
+          .map(item => {
+            const title = String(item?.title || '').trim()
+            const steps = (Array.isArray(item?.steps) ? item.steps : [])
+              .map(sanitizeRecentGenerationStep)
+              .filter(Boolean)
+            if (!title || steps.length === 0) return null
+            return {
+              id: String(item?.id || `recent-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`),
+              title,
+              createdAt: String(item?.createdAt || new Date().toISOString()),
+              steps,
+            }
+          })
+          .filter(Boolean)
       : []
   } catch {
     return []
@@ -424,6 +486,9 @@ function App() {
 
   const [generationInput, setGenerationInput] = useState('')
   const [generatedSteps, setGeneratedSteps] = useState([])
+  const [recentGenerations, setRecentGenerations] = useState(() =>
+    readScopedRecentGenerations(initialStorageScope)
+  )
   const [isGenerating, setIsGenerating] = useState(false)
   const [showGeneratedResult, setShowGeneratedResult] = useState(false)
   const [genCustomInput, setGenCustomInput] = useState('')
@@ -436,8 +501,10 @@ function App() {
   const [taskDateDraft, setTaskDateDraft] = useState('')
   const [taskEditorBusy, setTaskEditorBusy] = useState(false)
   const [recommendationsCache, setRecommendationsCache] = useState({})
+  const [highlightedTaskIds, setHighlightedTaskIds] = useState([])
   const generatedDateInputRef = useRef(null)
   const generationInputRef = useRef(null)
+  const agendaTasksRef = useRef(null)
 
   const normalizedUserEmail = normalizeEmail(userEmail)
   const sessionToken = String(authToken || '').trim()
@@ -514,6 +581,18 @@ function App() {
     })
     return () => cancelAnimationFrame(frame)
   }, [activeTab, showGeneratedResult])
+
+  useEffect(() => {
+    if (highlightedTaskIds.length === 0) return undefined
+    const frame = requestAnimationFrame(() => {
+      agendaTasksRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+    const timeout = window.setTimeout(() => setHighlightedTaskIds([]), 3600)
+    return () => {
+      cancelAnimationFrame(frame)
+      window.clearTimeout(timeout)
+    }
+  }, [highlightedTaskIds])
 
   useEffect(() => {
     const goOnline = () => setIsOnline(true)
@@ -603,9 +682,11 @@ function App() {
     }
     setGoals(readScopedGoalList(GOALS_KEY, storageScope))
     setCompletedGoals(readScopedGoalList(COMPLETED_GOALS_KEY, storageScope))
+    setRecentGenerations(readScopedRecentGenerations(storageScope))
     setRecommendations([])
     setRecommendationsSource('')
     setRecommendationsCache({})
+    setHighlightedTaskIds([])
     setTaskEditor(null)
     setTaskDraft('')
     setTaskDateDraft('')
@@ -658,6 +739,13 @@ function App() {
   }, [completedGoals, completedGoalsStorageKey])
 
   useEffect(() => {
+    localStorage.setItem(
+      makeScopedStorageKey(RECENT_GENERATIONS_KEY, storageScope),
+      JSON.stringify(recentGenerations)
+    )
+  }, [recentGenerations, storageScope])
+
+  useEffect(() => {
     if (!Array.isArray(goals) || goals.length === 0) {
       setActiveGoalId(null)
       localStorage.removeItem(activeGoalStorageKey)
@@ -686,7 +774,19 @@ function App() {
   const agendaMicroTasks = useMemo(() => {
     const list = activeGoal?.microGoals
     if (!Array.isArray(list)) return []
-    return [...list].filter(t => !t.completed).sort(compareMicroGoalsByCheckpoint)
+    return [...list].sort((a, b) => {
+      if (Boolean(a.completed) !== Boolean(b.completed)) {
+        return Number(a.completed) - Number(b.completed)
+      }
+      return compareMicroGoalsByCheckpoint(a, b)
+    })
+  }, [activeGoal])
+
+  const activeGoalProgress = useMemo(() => {
+    const total = activeGoal?.microGoals?.length || 0
+    const completedCount = (activeGoal?.microGoals || []).filter(item => item.completed).length
+    const percent = total === 0 ? 0 : Math.round((completedCount / total) * 100)
+    return { total, completedCount, percent }
   }, [activeGoal])
 
   const agendaRecommendations = useMemo(() => {
@@ -696,8 +796,42 @@ function App() {
     const sourceText = normalizeTaskText(recommendationsSource)
     if (!sourceText || sourceText !== activeGoalText) return []
 
-    return Array.isArray(recommendations) ? recommendations : []
+    return (Array.isArray(recommendations) ? recommendations : []).slice(0, AI_SUGGEST_SLOTS)
   }, [activeGoal?.text, recommendations, recommendationsSource])
+
+  function setCurrentGoal(goalId) {
+    setActiveGoalId(goalId)
+    localStorage.setItem(activeGoalStorageKey, String(goalId))
+  }
+
+  function replaceGoalInState(nextGoal) {
+    if (!nextGoal?.id) return
+    setGoals(prev => {
+      const exists = prev.some(item => item.id === nextGoal.id)
+      return exists ? prev.map(item => (item.id === nextGoal.id ? nextGoal : item)) : [nextGoal, ...prev]
+    })
+  }
+
+  function rememberGeneration(title, steps) {
+    const safeTitle = String(title || '').trim()
+    const safeSteps = (Array.isArray(steps) ? steps : [])
+      .map(sanitizeRecentGenerationStep)
+      .filter(Boolean)
+    if (!safeTitle || safeSteps.length === 0) return
+    const entry = {
+      id: `recent-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+      title: safeTitle,
+      createdAt: new Date().toISOString(),
+      steps: safeSteps,
+    }
+    setRecentGenerations(prev => [entry, ...prev.filter(item => item.title !== safeTitle)].slice(0, 6))
+  }
+
+  function highlightAgendaTasks(taskIds = []) {
+    const uniqueIds = [...new Set((Array.isArray(taskIds) ? taskIds : []).filter(Boolean))]
+    if (uniqueIds.length === 0) return
+    setHighlightedTaskIds(uniqueIds)
+  }
 
   function switchActiveGoal(delta) {
     if (safeGoals.length <= 1) return
@@ -706,8 +840,7 @@ function App() {
     const len = safeGoals.length
     const nextIdx = (idx + delta + len) % len
     const nextGoal = safeGoals[nextIdx]
-    setActiveGoalId(nextGoal.id)
-    localStorage.setItem(activeGoalStorageKey, String(nextGoal.id))
+    setCurrentGoal(nextGoal.id)
     setRecommendations([])
   }
 
@@ -861,15 +994,15 @@ function App() {
     return normalized
   }
 
-  async function completeMicroGoal(goalId, microId) {
+  async function completeMicroGoal(goalId, microId, nextCompleted = true) {
     const goal = safeGoals.find(item => item.id === goalId)
     if (!goal) return
 
     const target = goal.microGoals.find(m => m.id === microId)
-    if (!target || target.completed) return
+    if (!target || target.completed === nextCompleted) return
 
     const microGoals = goal.microGoals.map(item =>
-      item.id === microId ? { ...item, completed: true } : item
+      item.id === microId ? { ...item, completed: nextCompleted } : item
     )
     const updatedGoal = { ...goal, microGoals }
     const allDone = microGoals.length > 0 && microGoals.every(item => item.completed)
@@ -896,7 +1029,7 @@ function App() {
     }
 
     const saved = await updateGoalLocally(updatedGoal)
-    setGoals(prev => prev.map(item => (item.id === saved.id ? saved : item)))
+    replaceGoalInState(saved)
   }
 
   const storeRecommendationsInCache = useCallback((goal, sourceText, items) => {
@@ -917,6 +1050,87 @@ function App() {
 
   function closeGeneratedDateEditor() {
     setGeneratedDateEditor(null)
+  }
+
+  async function saveStepsToGoal(goalTitle, steps, { suggested = true } = {}) {
+    const safeTitle = String(goalTitle || '').trim()
+    const sourceSteps = Array.isArray(steps) ? steps : []
+    if (!safeTitle || sourceSteps.length === 0) return null
+
+    let savedGoal =
+      findGoalByTitle(safeGoals, safeTitle) ||
+      (activeGoal && goalTitlesAlign(safeTitle, activeGoal.text) ? activeGoal : null)
+
+    if (!savedGoal) {
+      savedGoal = await createGoal(safeTitle)
+      if (!savedGoal) return null
+    }
+
+    savedGoal = normalizeGoal(savedGoal)
+    const nextMicroGoals = [...(savedGoal.microGoals || [])]
+    const addedIds = []
+
+    sourceSteps.forEach((step, index) => {
+      const stepText = String(step?.text || step?.title || '').trim()
+      if (!stepText || hasSimilarTaskDuplicate({ microGoals: nextMicroGoals }, stepText)) {
+        return
+      }
+
+      const nextItem = buildAppendedMicroGoal(nextMicroGoals, {
+        id: Date.now() + index + Math.floor(Math.random() * 1000),
+        text: stepText,
+        completed: false,
+        suggested,
+        recommendedDate: step?.recommendedDate,
+        recommendedOffsetDays: step?.recommendedOffsetDays,
+        forceRecommendedDate: Boolean(step?.userPickedDate),
+      })
+      nextMicroGoals.push(nextItem)
+      addedIds.push(nextItem.id)
+    })
+
+    if (addedIds.length === 0) {
+      setCurrentGoal(savedGoal.id)
+      return { goal: savedGoal, addedIds }
+    }
+
+    const updated = await updateGoalLocally({
+      ...savedGoal,
+      text: safeTitle,
+      microGoals: nextMicroGoals,
+    })
+    const normalizedGoal = normalizeGoal(updated)
+    replaceGoalInState(normalizedGoal)
+    setCurrentGoal(normalizedGoal.id)
+    highlightAgendaTasks(addedIds)
+    return { goal: normalizedGoal, addedIds }
+  }
+
+  function openRecentGeneration(item) {
+    if (!item) return
+    setGenerationInput(String(item.title || ''))
+    setGeneratedSteps([])
+    setShowGeneratedResult(false)
+    setAiError('')
+    setActiveTab('generate')
+  }
+
+  async function applyRecentGeneration(item) {
+    if (!item) return
+    try {
+      setAiError('')
+      const result = await saveStepsToGoal(item.title, item.steps, { suggested: true })
+      if (!result?.goal) return
+      setGenerationInput(String(item.title || ''))
+      setActiveTab('agenda')
+    } catch (error) {
+      console.error('Повторное добавление генерации:', error)
+      setAiError('Не удалось добавить шаги из недавней генерации')
+    }
+  }
+
+  function removeRecentGeneration(itemId) {
+    setRecentGenerations(prev => prev.filter(item => item.id !== itemId))
   }
 
   async function refillRecommendationSlotInPlace(removedItemId, savedGoal) {
@@ -1053,7 +1267,8 @@ function App() {
         ],
       }
       const saved = await updateGoalLocally(updatedGoal)
-      setGoals(prev => prev.map(g => (g.id === saved.id ? saved : g)))
+      replaceGoalInState(saved)
+      highlightAgendaTasks([nextMicroGoal.id])
       await refillRecommendationSlotInPlace(item.id, saved)
     } catch (error) {
       console.error('Рекомендация в повестку:', error)
@@ -1068,8 +1283,7 @@ function App() {
 
     setIsGenerating(true)
     setAiError('')
-    setShowGeneratedResult(true)
-    setGeneratedSteps([])
+    setShowGeneratedResult(false)
 
     try {
       const baseGoal =
@@ -1085,12 +1299,22 @@ function App() {
         throw new Error('empty')
       }
 
-      setGeneratedSteps(planSuggestedMicroGoals(clean, baseGoal))
+      const planned = planSuggestedMicroGoals(clean, baseGoal)
+      const result = await saveStepsToGoal(text, planned, { suggested: true })
+      if (!result?.goal) {
+        throw new Error('save-failed')
+      }
+      if (result.addedIds.length === 0) {
+        setAiError('Похожие шаги уже есть в этой цели')
+      }
+      rememberGeneration(text, planned)
+      setGeneratedSteps(planned)
+      setActiveTab('agenda')
     } catch (error) {
       console.error('Ошибка генерации:', error)
       const m = error?.message
       setAiError(
-        m && m !== 'failed' && m !== 'empty'
+        m && m !== 'failed' && m !== 'empty' && m !== 'save-failed'
           ? m
           : 'Не удалось сгенерировать. Попробуйте позже'
       )
@@ -1132,9 +1356,9 @@ function App() {
         ]
         const updated = await updateGoalLocally({ ...baseGoal, microGoals })
         const savedGoal = normalizeGoal(updated)
-        setGoals(prev => prev.map(g => (g.id === savedGoal.id ? savedGoal : g)))
-        setActiveGoalId(savedGoal.id)
-        localStorage.setItem(activeGoalStorageKey, String(savedGoal.id))
+        replaceGoalInState(savedGoal)
+        setCurrentGoal(savedGoal.id)
+        highlightAgendaTasks([microGoals[microGoals.length - 1]?.id])
       } else {
         const created = await createGoal(goalTitle)
         if (!created) return
@@ -1155,7 +1379,9 @@ function App() {
         })
         const savedGoal = normalizeGoal(updated)
         if (savedGoal?.id != null) {
-          setGoals(prev => prev.map(g => (g.id === savedGoal.id ? savedGoal : g)))
+          replaceGoalInState(savedGoal)
+          setCurrentGoal(savedGoal.id)
+          highlightAgendaTasks([microGoals[microGoals.length - 1]?.id])
         }
       }
 
@@ -1257,9 +1483,9 @@ function App() {
         ]
         const updated = await updateGoalLocally({ ...savedGoal, microGoals })
         savedGoal = normalizeGoal(updated)
-        setGoals(prev => prev.map(g => (g.id === savedGoal.id ? savedGoal : g)))
-        setActiveGoalId(savedGoal.id)
-        localStorage.setItem(activeGoalStorageKey, String(savedGoal.id))
+        replaceGoalInState(savedGoal)
+        setCurrentGoal(savedGoal.id)
+        highlightAgendaTasks([microGoals[microGoals.length - 1]?.id])
       } else if (!savedGoal) {
         const created = await createGoal(goalTitle)
         if (!created) return
@@ -1281,7 +1507,9 @@ function App() {
         })
         savedGoal = normalizeGoal(updated)
         if (savedGoal?.id != null) {
-          setGoals(prev => prev.map(g => (g.id === savedGoal.id ? savedGoal : g)))
+          replaceGoalInState(savedGoal)
+          setCurrentGoal(savedGoal.id)
+          highlightAgendaTasks([microGoals[microGoals.length - 1]?.id])
         }
       } else {
         savedGoal = normalizeGoal(
@@ -1373,7 +1601,10 @@ function App() {
             )
 
       const saved = normalizeGoal(await updateGoalLocally({ ...goal, microGoals }))
-      setGoals(prev => prev.map(item => (item.id === saved.id ? saved : item)))
+      replaceGoalInState(saved)
+      if (taskEditor.mode === 'create') {
+        highlightAgendaTasks([microGoals[microGoals.length - 1]?.id])
+      }
       closeTaskEditor()
     } catch (error) {
       console.error('Сохранение микрошагa:', error)
@@ -2020,6 +2251,32 @@ function App() {
                 )}
               </div>
 
+              {activeGoal && (
+                <div className="goal-progress-card">
+                  <div className="goal-progress-head">
+                    <span>Прогресс по цели</span>
+                    <strong>{activeGoalProgress.percent}%</strong>
+                  </div>
+                  <div
+                    className="goal-progress-track"
+                    role="progressbar"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={activeGoalProgress.percent}
+                    aria-label="Прогресс по цели"
+                  >
+                    <span
+                      className="goal-progress-fill"
+                      style={{ width: `${activeGoalProgress.percent}%` }}
+                    />
+                  </div>
+                  <p className="secondary-text goal-progress-copy">
+                    Выполнено: {activeGoalProgress.completedCount} из {activeGoalProgress.total} шагов
+                  </p>
+                </div>
+              )}
+
+              <div ref={agendaTasksRef} />
               <h2 className="section-h2-tight">Микрошаги</h2>
               {activeGoal && (
                 <p className="secondary-text section-subline">под цель «{activeGoal.text}»</p>
@@ -2034,27 +2291,45 @@ function App() {
                 </button>
               )}
               {!activeGoal || agendaMicroTasks.length === 0 ? (
-                <p className="secondary-text">
-                  {activeGoal
-                    ? 'Нет микрошагов для этой цели. Нажмите [+] чтобы добавить или сгенерировать'
-                    : 'Выберите цель выше — здесь появятся её шаги'}
-                </p>
+                activeGoal ? (
+                  <button
+                    type="button"
+                    className="task-empty-cta"
+                    onClick={() => openTaskEditor(activeGoal.id)}
+                  >
+                    <strong>Добавьте первый микрошаг</strong>
+                    <span className="secondary-text">
+                      Или используйте рекомендации справа
+                    </span>
+                  </button>
+                ) : (
+                  <p className="secondary-text">Выберите цель выше — здесь появятся её шаги</p>
+                )
               ) : (
                 <div className="tasks-grid">
                   {agendaMicroTasks.map((task, index) => (
                     <article
                       key={task.id}
-                      className="task-card micro-appear"
+                      className={`task-card micro-appear ${task.completed ? 'task-card--completed' : ''} ${highlightedTaskIds.includes(task.id) ? 'task-card--fresh' : ''}`}
                       style={{ '--appear-i': index }}
                     >
-                      <button
-                        type="button"
-                        className="task-card-main"
-                        onClick={() => openTaskEditor(activeGoal.id, task)}
-                      >
-                        <span className="task-card-check">☐</span>
-                        <strong>{task.text}</strong>
-                      </button>
+                      <div className="task-card-main">
+                        <button
+                          type="button"
+                          className={`task-card-check ${task.completed ? 'task-card-check--done' : ''}`}
+                          aria-label={task.completed ? 'Вернуть шаг в работу' : 'Отметить шаг выполненным'}
+                          onClick={() => completeMicroGoal(activeGoal.id, task.id, !task.completed)}
+                        >
+                          {task.completed ? '✓' : ''}
+                        </button>
+                        <button
+                          type="button"
+                          className="task-card-text-button"
+                          onClick={() => openTaskEditor(activeGoal.id, task)}
+                        >
+                          <strong>{task.text}</strong>
+                        </button>
+                      </div>
                       <div className="task-card-actions">
                         <label
                           className={`task-date-button ${isRecommendedDatePassed(task) ? 'task-date-button--overdue' : ''}`}
@@ -2149,6 +2424,22 @@ function App() {
               )}
             </aside>
           </div>
+
+          <button
+            type="button"
+            className="fab"
+            aria-label={activeGoal ? 'Создать новый микрошаг' : 'Создать новую цель'}
+            onClick={() => {
+              if (activeGoal) {
+                openTaskEditor(activeGoal.id)
+              } else {
+                beginNewGoalGeneration()
+                setActiveTab('generate')
+              }
+            }}
+          >
+            +
+          </button>
         </section>
       )}
 
@@ -2166,13 +2457,37 @@ function App() {
             <>
               <div className="empty-space" />
               <h2 className="center-title">Что нужно разбить на микрошаги?</h2>
-              <textarea
-                ref={generationInputRef}
-                className="big-input"
-                value={generationInput}
-                onChange={e => setGenerationInput(e.target.value)}
-                placeholder="Напишите задачу или опишите контекст"
-              />
+              <div className="generation-form-card">
+                <textarea
+                  ref={generationInputRef}
+                  className="big-input"
+                  maxLength={GENERATION_INPUT_LIMIT}
+                  value={generationInput}
+                  onChange={e => setGenerationInput(e.target.value)}
+                  placeholder="Напишите цель или задачу, которую хотите разложить на шаги"
+                />
+                <div className="generation-input-meta">
+                  <span className="secondary-text">Чем конкретнее цель, тем полезнее будут шаги</span>
+                  <span className="secondary-text">
+                    {generationInput.length} / {GENERATION_INPUT_LIMIT}
+                  </span>
+                </div>
+                <div className="generation-example-row">
+                  {GENERATION_EXAMPLES.map(example => (
+                    <button
+                      key={example}
+                      type="button"
+                      className="generation-example-chip"
+                      onClick={() => {
+                        setGenerationInput(example)
+                        setShowGeneratedResult(false)
+                      }}
+                    >
+                      {example}
+                    </button>
+                  ))}
+                </div>
+              </div>
               {activeGoal && (
                 <p className="secondary-text generation-goal-hint">
                   {!generationInput.trim()
@@ -2182,16 +2497,65 @@ function App() {
                       : `Будет отдельная цель «${generationInput.trim()}» (не «${activeGoal.text}»).`}
                 </p>
               )}
-              <p className="secondary-text">
-                Примеры: «Подготовиться к экзамену», «Навести порядок дома», «Начать бегать по утрам»
-              </p>
               <button
                 className="primary-button"
-                disabled={isGenerating}
+                disabled={isGenerating || !generationInput.trim()}
                 onClick={() => handleGenerate()}
               >
-                {isGenerating ? 'Генерируем…' : 'Сгенерировать'}
+                {isGenerating ? 'Создаём план…' : 'Сгенерировать'}
               </button>
+
+              <details className="generation-help">
+                <summary>Как это работает</summary>
+                <div className="generation-help-body">
+                  <p>1. Ты описываешь цель в одном поле.</p>
+                  <p>2. Ассистент генерирует 3 стартовых микрошагa.</p>
+                  <p>3. Шаги сразу попадают в повестку текущей или новой цели.</p>
+                </div>
+              </details>
+
+              {recentGenerations.length > 0 && (
+                <section className="recent-generations">
+                  <div className="section-heading-row">
+                    <h2>Недавние генерации</h2>
+                  </div>
+                  <div className="recent-generations-list">
+                    {recentGenerations.map(item => (
+                      <article key={item.id} className="recent-generation-card">
+                        <div className="recent-generation-main">
+                          <strong>{item.title}</strong>
+                          <p className="secondary-text">
+                            {item.steps.length} шага · {formatRecentGenerationDate(item.createdAt)}
+                          </p>
+                        </div>
+                        <div className="recent-generation-actions">
+                          <button
+                            type="button"
+                            className="text-button recent-generation-link"
+                            onClick={() => openRecentGeneration(item)}
+                          >
+                            Открыть
+                          </button>
+                          <button
+                            type="button"
+                            className="text-button recent-generation-link"
+                            onClick={() => applyRecentGeneration(item)}
+                          >
+                            Добавить
+                          </button>
+                          <button
+                            type="button"
+                            className="text-button recent-generation-link recent-generation-link--danger"
+                            onClick={() => removeRecentGeneration(item.id)}
+                          >
+                            Удалить
+                          </button>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              )}
             </>
           )}
 
@@ -2447,13 +2811,13 @@ function App() {
                 <button
                   type="button"
                   className="success-button"
-                  disabled={taskEditorBusy || editingTask.completed}
+                  disabled={taskEditorBusy}
                   onClick={async () => {
-                    await completeMicroGoal(taskEditor.goalId, editingTask.id)
+                    await completeMicroGoal(taskEditor.goalId, editingTask.id, !editingTask.completed)
                     closeTaskEditor()
                   }}
                 >
-                  Отметить выполненным
+                  {editingTask.completed ? 'Вернуть в работу' : 'Отметить выполненным'}
                 </button>
               )}
               <button
