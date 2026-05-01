@@ -554,6 +554,7 @@ small,
   position: relative;
   display: inline-flex;
   align-items: center;
+  border: none;
   min-height: 30px;
   padding: 6px 12px;
   border-radius: 999px;
@@ -868,9 +869,10 @@ small,
   box-shadow: var(--shadow-card);
 }
 
-.generation-help summary {
-  padding: 14px 16px;
-  cursor: pointer;
+.generation-help-title {
+  margin: 0;
+  padding: 14px 16px 0;
+  font-size: 16px;
   font-weight: 600;
 }
 
@@ -941,6 +943,15 @@ small,
 
 .recent-generation-link--danger {
   color: #b42318;
+}
+
+.generation-new-badge {
+  color: var(--accent);
+  font-weight: 600;
+  background: #eef4ff;
+  border-radius: 999px;
+  padding: 8px 12px;
+  white-space: nowrap;
 }
 
 .result-goal-header {

@@ -387,6 +387,7 @@ function textSimilarity(a, b) {
 }
 
 const CHECKPOINT_GAP_DAYS = [3, 4, 7, 7, 14, 14, 21]
+const ALLOWED_GOAL_CATEGORIES = ['Учёба', 'Работа', 'Личное', 'Другое']
 
 function checkpointGapForIndex(index) {
   if (index < CHECKPOINT_GAP_DAYS.length) return CHECKPOINT_GAP_DAYS[index]
@@ -458,6 +459,51 @@ async function generateMicroGoals(goalText, existingTexts = [], count = 3) {
   }
 
   return deduped
+}
+
+function fallbackGoalCategory(text) {
+  const normalized = normalizeTaskText(text)
+  if (!normalized) return 'Другое'
+  if (
+    /(учеб|экзам|курс|лекц|урок|дз|домашк|сесс|диплом|реферат|зачет|англий|универс|колледж)/.test(
+      normalized
+    )
+  ) {
+    return 'Учёба'
+  }
+  if (/(работ|проект|клиент|митинг|созвон|офис|продаж|карьер|резюме|интервью)/.test(normalized)) {
+    return 'Работа'
+  }
+  if (/(спорт|бег|здоров|сон|дом|семь|хобби|личн|путешеств|поряд|уборк)/.test(normalized)) {
+    return 'Личное'
+  }
+  return 'Другое'
+}
+
+async function classifyGoalCategory(goalText) {
+  const fallback = fallbackGoalCategory(goalText)
+  if (!String(goalText || '').trim()) return fallback
+  if (!process.env.YANDEX_API_KEY || !process.env.YANDEX_FOLDER_ID) return fallback
+
+  const response = await yandex.chat.completions.create({
+    model: `gpt://${process.env.YANDEX_FOLDER_ID}/yandexgpt-lite/latest`,
+    temperature: 0,
+    messages: [
+      {
+        role: 'system',
+        content:
+          'Определи категорию цели. Верни только одно слово из списка: Учёба, Работа, Личное, Другое.',
+      },
+      {
+        role: 'user',
+        content: `Цель: ${goalText}`,
+      },
+    ],
+  })
+
+  const content = String(response.choices?.[0]?.message?.content || '').trim()
+  const exact = ALLOWED_GOAL_CATEGORIES.find(item => item.toLowerCase() === content.toLowerCase())
+  return exact || fallback
 }
 
 app.get('/', (req, res) => {
@@ -888,6 +934,20 @@ app.post('/api/preview-microgoals', async (req, res) => {
     res.status(500).json({ error: mapAiError(error) })
   }
 })
+
+app.post('/api/classify-goal-category', async (req, res) => {
+  const text = String(req.body?.text || '').trim()
+  if (!text) return res.status(400).json({ error: 'Текст цели обязателен' })
+
+  try {
+    const category = await classifyGoalCategory(text)
+    res.json({ category })
+  } catch (error) {
+    console.error('Ошибка классификации цели:', error)
+    res.json({ category: fallbackGoalCategory(text) })
+  }
+})
+
 app.post('/api/goals', async (req, res) => {
   const { text, microGoals: rawMicroGoals, category = 'Другое', createdAt } = req.body
 

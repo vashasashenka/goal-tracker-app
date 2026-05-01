@@ -62,8 +62,8 @@ function formatChartLabel(key) {
 function getRangeCaption(range, filteredGoals) {
   if (filteredGoals.length === 0) {
     if (range === 'week') return 'За последние 7 дней'
-    if (range === 'month') return 'За текущий месяц'
-    if (range === 'year') return 'За текущий год'
+    if (range === 'month') return 'За последние 30 дней'
+    if (range === 'year') return 'За последние 365 дней'
     return 'За всё время'
   }
 

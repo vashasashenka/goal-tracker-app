@@ -130,10 +130,12 @@ export function inferGoalCategory(text) {
 
 export function normalizeGoalCategory(category, fallbackText = '') {
   const normalized = String(category || '').trim()
-  if (GOAL_CATEGORIES.includes(normalized)) {
+  if (GOAL_CATEGORIES.includes(normalized) && normalized !== 'Другое') {
     return normalized
   }
-  return inferGoalCategory(fallbackText)
+  const inferred = inferGoalCategory(fallbackText)
+  if (inferred !== 'Другое') return inferred
+  return GOAL_CATEGORIES.includes(normalized) ? normalized : 'Другое'
 }
 
 export function resolveGoalCreatedAt(goal) {
@@ -195,19 +197,17 @@ export function filterGoals(goals, range, now = new Date()) {
       return date.getTime() >= weekStart.getTime() && date.getTime() <= today.getTime()
     }
 
-    if (range === 'month') {
-      return (
-        date.getFullYear() === today.getFullYear() &&
-        date.getMonth() === today.getMonth()
-      )
-    }
-
-    if (range === 'year') {
-      return date.getFullYear() === today.getFullYear()
-    }
+    if (range === 'month') return date.getTime() >= addDays(today, -29).getTime()
+    if (range === 'year') return date.getTime() >= addDays(today, -364).getTime()
 
     return true
   })
+}
+
+function addDays(value, deltaDays) {
+  const date = new Date(value)
+  date.setDate(date.getDate() + Math.trunc(Number(deltaDays) || 0))
+  return date
 }
 
 export function getProgress(goals) {

@@ -405,6 +405,20 @@ async function fetchPreviewMicrogoals(text, existingTexts, count = AI_SUGGEST_SL
     .filter(item => item.text)
 }
 
+async function fetchGoalCategory(text) {
+  const response = await fetch(`${API_URL}/api/classify-goal-category`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  })
+  if (!response.ok) {
+    const msg = await parseApiErrorMessage(response)
+    throw new Error(msg || 'failed')
+  }
+  const payload = await response.json()
+  return normalizeGoalCategory(payload?.category, text)
+}
+
 function normalizeGoal(goal) {
   if (goal == null) return null
   const text = String(goal.text || goal.title || '').trim()
@@ -928,6 +942,7 @@ function App() {
     if (taskEditor?.goalId === goalId && taskEditor?.taskId === taskId) {
       setTaskDateDraft(normalizedDate)
     }
+    closeGeneratedDateEditor()
   }
 
   const editingTask = useMemo(() => {
@@ -965,7 +980,12 @@ function App() {
   async function createGoal(text) {
     const goalText = String(text || '').trim()
     if (!goalText) return null
-    const category = normalizeGoalCategory('', goalText)
+    let category = normalizeGoalCategory('', goalText)
+    try {
+      category = await fetchGoalCategory(goalText)
+    } catch {
+      category = normalizeGoalCategory('', goalText)
+    }
     const createdAt = new Date().toISOString()
 
     const normalized = hasAccountAccess
@@ -1651,6 +1671,8 @@ function App() {
       localStorage.removeItem(activeGoalStorageKey)
       setRecommendations([])
       setRecommendationsSource('')
+      setRecentGenerations([])
+      localStorage.removeItem(makeScopedStorageKey(RECENT_GENERATIONS_KEY, storageScope))
       resetGenerationUi()
     } catch (error) {
       console.error('Ошибка очистки:', error)
@@ -2331,19 +2353,22 @@ function App() {
                         </button>
                       </div>
                       <div className="task-card-actions">
-                        <label
+                        <button
+                          type="button"
                           className={`task-date-button ${isRecommendedDatePassed(task) ? 'task-date-button--overdue' : ''}`}
+                          aria-label="Выбрать дату для шага"
+                          onClick={() =>
+                            openGeneratedDateEditor('task', {
+                              goalId: activeGoal.id,
+                              taskId: task.id,
+                              value: normalizeIsoDate(task.recommendedDate),
+                            })
+                          }
                         >
                           {task.recommendedDate
                             ? `Дата: ${formatRecommendedDate(task.recommendedDate)}`
                             : 'Выбрать дату'}
-                          <input
-                            type="date"
-                            className="task-date-native"
-                            value={normalizeIsoDate(task.recommendedDate)}
-                            onChange={e => saveTaskDate(activeGoal.id, task.id, e.target.value)}
-                          />
-                        </label>
+                        </button>
                       </div>
                       {isRecommendedDatePassed(task) && (
                         <span className="task-card-warning">Рекомендованная дата уже прошла</span>
@@ -2450,7 +2475,13 @@ function App() {
               ← Назад
             </button>
             <h1>{showGeneratedResult ? 'Результат' : 'Генерация'}</h1>
-            <div />
+            {recentGenerations.length > 0 ? (
+              <button type="button" className="text-button generation-new-badge" onClick={beginNewGoalGeneration}>
+                ✨ Новая генерация
+              </button>
+            ) : (
+              <div />
+            )}
           </header>
 
           {!showGeneratedResult && (
@@ -2505,14 +2536,14 @@ function App() {
                 {isGenerating ? 'Создаём план…' : 'Сгенерировать'}
               </button>
 
-              <details className="generation-help">
-                <summary>Как это работает</summary>
+              <section className="generation-help">
+                <h3 className="generation-help-title">Как это работает</h3>
                 <div className="generation-help-body">
                   <p>1. Ты описываешь цель в одном поле.</p>
                   <p>2. Ассистент генерирует 3 стартовых микрошагa.</p>
                   <p>3. Шаги сразу попадают в повестку текущей или новой цели.</p>
                 </div>
-              </details>
+              </section>
 
               {recentGenerations.length > 0 && (
                 <section className="recent-generations">
@@ -2709,6 +2740,8 @@ function App() {
                     updateGeneratedStepDate(generatedDateEditor.stepId, e.target.value)
                   } else if (generatedDateEditor.mode === 'recommendation') {
                     updateRecommendationDate(generatedDateEditor.recommendationId, e.target.value)
+                  } else if (generatedDateEditor.mode === 'task') {
+                    saveTaskDate(generatedDateEditor.goalId, generatedDateEditor.taskId, e.target.value)
                   } else {
                     updateOwnGeneratedDate(e.target.value)
                   }
