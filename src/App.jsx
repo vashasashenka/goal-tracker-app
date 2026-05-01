@@ -514,6 +514,9 @@ function App() {
   const [taskDraft, setTaskDraft] = useState('')
   const [taskDateDraft, setTaskDateDraft] = useState('')
   const [taskEditorBusy, setTaskEditorBusy] = useState(false)
+  const [inlineEditTaskId, setInlineEditTaskId] = useState(null)
+  const [inlineEditText, setInlineEditText] = useState('')
+  const [inlineEditBusy, setInlineEditBusy] = useState(false)
   const [recommendationsCache, setRecommendationsCache] = useState({})
   const [highlightedTaskIds, setHighlightedTaskIds] = useState([])
   const generatedDateInputRef = useRef(null)
@@ -705,6 +708,7 @@ function App() {
     setTaskDraft('')
     setTaskDateDraft('')
     setTaskEditorBusy(false)
+    cancelInlineTaskEdit()
     setGenerationInput('')
     setGeneratedSteps([])
     setShowGeneratedResult(false)
@@ -913,6 +917,19 @@ function App() {
     setTaskDraft('')
     setTaskDateDraft('')
     setTaskEditorBusy(false)
+  }
+
+  function startInlineTaskEdit(task) {
+    if (!task) return
+    setInlineEditTaskId(task.id)
+    setInlineEditText(String(task.text || ''))
+    setAiError('')
+  }
+
+  function cancelInlineTaskEdit() {
+    setInlineEditTaskId(null)
+    setInlineEditText('')
+    setInlineEditBusy(false)
   }
 
   async function saveTaskDate(goalId, taskId, nextDate) {
@@ -1634,6 +1651,49 @@ function App() {
     }
   }
 
+  async function saveInlineTaskEdit(goalId, taskId) {
+    if (inlineEditBusy) return
+    const goal = safeGoals.find(item => item.id === goalId)
+    if (!goal) return
+    const text = String(inlineEditText || '').trim()
+    if (!text) return
+
+    const duplicate = (goal.microGoals || []).some(
+      item => item.id !== taskId && textSimilarity(item.text, text) >= 0.65
+    )
+    if (duplicate) {
+      setAiError('Похожий микрошаг уже есть в этой цели')
+      return
+    }
+
+    setInlineEditBusy(true)
+    try {
+      const otherMicroGoals = (goal.microGoals || []).filter(item => item.id !== taskId)
+      const microGoals = (goal.microGoals || []).map(item =>
+        item.id === taskId
+          ? normalizeMicroGoal(
+              {
+                ...item,
+                text,
+                recommendedDate:
+                  normalizeIsoDate(item.recommendedDate) ||
+                  inferRecommendedDate(item.checkpointOrder, otherMicroGoals),
+              },
+              0,
+              otherMicroGoals
+            )
+          : item
+      )
+      const saved = normalizeGoal(await updateGoalLocally({ ...goal, microGoals }))
+      replaceGoalInState(saved)
+      cancelInlineTaskEdit()
+    } catch (error) {
+      console.error('Инлайн-редактирование микрошага:', error)
+      setAiError('Не удалось сохранить микрошаг')
+      setInlineEditBusy(false)
+    }
+  }
+
   async function deleteTaskFromGoal(goalId, taskId) {
     const goal = safeGoals.find(item => item.id === goalId)
     if (!goal || taskEditorBusy) return
@@ -1674,6 +1734,7 @@ function App() {
       setRecentGenerations([])
       localStorage.removeItem(makeScopedStorageKey(RECENT_GENERATIONS_KEY, storageScope))
       resetGenerationUi()
+      cancelInlineTaskEdit()
     } catch (error) {
       console.error('Ошибка очистки:', error)
       setAiError('Не удалось очистить данные. Попробуйте позже')
@@ -2242,7 +2303,18 @@ function App() {
                 ) : (
                   <div className="goal-hero-top">
                     <div className="goal-hero-text-block">
-                      <p className="goal-hero-title">{activeGoal.text}</p>
+                      <div className="goal-hero-title-row">
+                        <span className="goal-hero-icon" aria-hidden="true">
+                          {activeGoal.category === 'Учёба'
+                            ? '🎓'
+                            : activeGoal.category === 'Работа'
+                              ? '💼'
+                              : activeGoal.category === 'Личное'
+                                ? '🌿'
+                                : '🎯'}
+                        </span>
+                        <p className="goal-hero-title">{activeGoal.text}</p>
+                      </div>
                       {safeGoals.length <= 1 && (
                         <p className="secondary-text goal-hero-hint">
                           Добавьте вторую цель в ✨ Генерации — появятся стрелки для переключения.
@@ -2269,6 +2341,17 @@ function App() {
                         </button>
                       </div>
                     )}
+                    <button
+                      type="button"
+                      className="goal-new-button"
+                      aria-label="Новая цель"
+                      onClick={() => {
+                        beginNewGoalGeneration()
+                        setActiveTab('generate')
+                      }}
+                    >
+                      ＋ Новая цель
+                    </button>
                   </div>
                 )}
               </div>
@@ -2347,9 +2430,54 @@ function App() {
                         <button
                           type="button"
                           className="task-card-text-button"
-                          onClick={() => openTaskEditor(activeGoal.id, task)}
+                          onClick={() => startInlineTaskEdit(task)}
                         >
-                          <strong>{task.text}</strong>
+                          {inlineEditTaskId === task.id ? (
+                            <span className="task-inline-edit">
+                              <input
+                                type="text"
+                                className="task-inline-input"
+                                value={inlineEditText}
+                                onChange={e => setInlineEditText(e.target.value)}
+                                autoFocus
+                                onKeyDown={e => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault()
+                                    saveInlineTaskEdit(activeGoal.id, task.id)
+                                  } else if (e.key === 'Escape') {
+                                    e.preventDefault()
+                                    cancelInlineTaskEdit()
+                                  }
+                                }}
+                              />
+                              <span className="task-inline-actions">
+                                <button
+                                  type="button"
+                                  className="text-button task-inline-action"
+                                  disabled={inlineEditBusy || !inlineEditText.trim()}
+                                  onClick={e => {
+                                    e.stopPropagation()
+                                    saveInlineTaskEdit(activeGoal.id, task.id)
+                                  }}
+                                >
+                                  Сохранить
+                                </button>
+                                <button
+                                  type="button"
+                                  className="text-button task-inline-action task-inline-action--muted"
+                                  disabled={inlineEditBusy}
+                                  onClick={e => {
+                                    e.stopPropagation()
+                                    cancelInlineTaskEdit()
+                                  }}
+                                >
+                                  Отмена
+                                </button>
+                              </span>
+                            </span>
+                          ) : (
+                            <strong>{task.text}</strong>
+                          )}
                         </button>
                       </div>
                       <div className="task-card-actions">
@@ -2475,13 +2603,7 @@ function App() {
               ← Назад
             </button>
             <h1>{showGeneratedResult ? 'Результат' : 'Генерация'}</h1>
-            {recentGenerations.length > 0 ? (
-              <button type="button" className="text-button generation-new-badge" onClick={beginNewGoalGeneration}>
-                ✨ Новая генерация
-              </button>
-            ) : (
-              <div />
-            )}
+            <div />
           </header>
 
           {!showGeneratedResult && (
@@ -2793,8 +2915,8 @@ function App() {
           <button
             className={activeTab === 'generate' ? 'active' : ''}
             onClick={() => {
+              beginNewGoalGeneration()
               setActiveTab('generate')
-              requestPreviewSuggestions(generationInput || activeGoal?.text || '')
             }}
           >
             ✨ Генерация
