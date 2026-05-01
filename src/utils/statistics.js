@@ -105,6 +105,25 @@ export function toLocalDateKey(value) {
   return `${year}-${month}-${day}`
 }
 
+function recommendedDateOnlyKey(value) {
+  const raw = String(value || '').trim()
+  return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : ''
+}
+
+/**
+ * День для графика активности: фактическая дата выполнения (completedAt),
+ * иначе — рекомендованная дата (если шаг завершён, но completedAt ещё не было в данных).
+ */
+export function getMicroStepActivityDateKey(step) {
+  if (!step?.completed) return ''
+  const rawDone = String(step.completedAt || '').trim()
+  if (rawDone) {
+    const k = toLocalDateKey(step.completedAt)
+    if (k) return k
+  }
+  return recommendedDateOnlyKey(step.recommendedDate)
+}
+
 function getGoalRawTitle(goal) {
   return String(goal?.title ?? goal?.text ?? '').trim()
 }
@@ -158,11 +177,13 @@ function normalizeStep(step, index) {
   const completed = Boolean(step?.completed)
   const completedAt =
     completed && step?.completedAt ? String(step.completedAt).trim() || null : null
+  const recommendedDate = recommendedDateOnlyKey(step?.recommendedDate) || null
   return {
     id: String(step?.id ?? `step-${index}`),
     title: String(step?.title ?? step?.text ?? '').trim() || `Шаг ${index + 1}`,
     completed,
     completedAt,
+    recommendedDate,
   }
 }
 
@@ -304,8 +325,8 @@ export function getMicroCompletionsInRange(goals, bounds) {
   let n = 0
   for (const g of goals) {
     for (const s of getGoalRawSteps(g)) {
-      if (!s.completed || !s.completedAt) continue
-      const k = toLocalDateKey(s.completedAt)
+      if (!s.completed) continue
+      const k = getMicroStepActivityDateKey(s)
       if (k && k >= a && k <= b) n += 1
     }
   }
@@ -319,8 +340,8 @@ export function getMicroDailyDetailMap(goals, bounds) {
   for (const g of goals) {
     const goalTitle = getGoalRawTitle(g)
     for (const s of getGoalRawSteps(g)) {
-      if (!s.completed || !s.completedAt) continue
-      const k = toLocalDateKey(s.completedAt)
+      if (!s.completed) continue
+      const k = getMicroStepActivityDateKey(s)
       if (!k) continue
       if (a && b && (k < a || k > b)) continue
       if (!map[k]) map[k] = { count: 0, steps: [] }
@@ -336,8 +357,8 @@ export function getMicroStreakDays(goals, now = new Date()) {
   const dates = new Set()
   for (const g of goals) {
     for (const s of getGoalRawSteps(g)) {
-      if (!s.completed || !s.completedAt) continue
-      const k = toLocalDateKey(s.completedAt)
+      if (!s.completed) continue
+      const k = getMicroStepActivityDateKey(s)
       if (k) dates.add(k)
     }
   }
@@ -403,8 +424,8 @@ export function getBestWeekdayMicroFromGoals(goals, bounds) {
   const days = {}
   for (const g of goals) {
     for (const s of getGoalRawSteps(g)) {
-      if (!s.completed || !s.completedAt) continue
-      const k = toLocalDateKey(s.completedAt)
+      if (!s.completed) continue
+      const k = getMicroStepActivityDateKey(s)
       if (!k) continue
       if (bounds?.start && bounds?.end) {
         const a = toLocalDateKey(bounds.start)

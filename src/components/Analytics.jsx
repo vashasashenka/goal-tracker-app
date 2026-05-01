@@ -20,6 +20,7 @@ import {
   getMicroDeltaPercentVersusPreviousPeriod,
   getMicroProgressForScopedGoals,
   getMicroStreakDays,
+  getMicroStepActivityDateKey,
   getRecentCompleted,
   normalizeGoalForStats,
 } from '../utils/statistics'
@@ -230,8 +231,8 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
     for (const g of statGoals) {
       const steps = g.steps || []
       for (const step of steps) {
-        if (!step.completed || !step.completedAt) continue
-        const k = toLocalDateKey(step.completedAt)
+        if (!step.completed) continue
+        const k = getMicroStepActivityDateKey(step)
         if (k) s.add(k)
       }
     }
@@ -302,7 +303,7 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
             title: items => (items[0] ? items[0].label : ''),
             label: item => {
               const n = item.parsed.y
-              if (!Number.isFinite(n) || n <= 0) return 'Нет завершённых микрошагов с датой'
+              if (!Number.isFinite(n) || n <= 0) return 'Нет завершённых микрошагов за этот день'
               return `Микрошагов: ${n}`
             },
             afterBody: items => {
@@ -428,7 +429,7 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
             ))}
           </div>
           <p className="secondary-text stats-card-foot">
-            День засчитывается, если отмечен хотя бы один микрошаг с датой выполнения.
+            День засчитывается, если отмечен микрошаг и есть дата выполнения или рекомендованная дата.
           </p>
         </article>
 
@@ -458,8 +459,8 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
         </div>
         {!hasDailyData ? (
           <p className="secondary-text stats-empty-text">
-            Здесь появятся столбцы по дням, когда у отмеченных микрошагов будет дата выполнения. Наведите на
-            столбец — список шагов.
+            Здесь появятся столбцы, когда есть завершённые микрошаги с датой выполнения или с выбранной
+            рекомендованной датой. Наведите на столбец — список шагов.
           </p>
         ) : (
           <div className="stats-chart-wrap">
