@@ -114,6 +114,44 @@ function getRangeDates(bounds, limit = 500) {
   return dates
 }
 
+/** Компактный график: до ~31 столбца по дням, иначе сумма по месяцам (как на референсе). */
+function formatMonthBucketLabel(ym) {
+  const [y, m] = ym.split('-').map(Number)
+  if (!Number.isFinite(y) || !Number.isFinite(m)) return ym
+  const d = new Date(y, m - 1, 1)
+  return d
+    .toLocaleDateString('ru-RU', {
+      month: 'short',
+      year: d.getFullYear() !== new Date().getFullYear() ? '2-digit' : undefined,
+    })
+    .replace(/\s?г\.$/, '')
+    .replace(/\./g, '')
+}
+
+function bucketEntriesByMonth(entries) {
+  const map = new Map()
+  for (const item of entries) {
+    const ym = String(item.date || '').slice(0, 7)
+    if (!/^\d{4}-\d{2}$/.test(ym)) continue
+    map.set(ym, (map.get(ym) || 0) + (Number(item.count) || 0))
+  }
+  return Array.from(map.entries())
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([ym, count]) => ({
+      date: `${ym}-01`,
+      count,
+      label: formatMonthBucketLabel(ym),
+    }))
+}
+
+function getCompactChartEntries(dailyEntries) {
+  if (!dailyEntries.length) return []
+  if (dailyEntries.length <= 31) return dailyEntries
+  return bucketEntriesByMonth(dailyEntries)
+}
+
+const INSIGHT_ICONS = ['📈', '⭐', '🎯', '🔥']
+
 function Analytics({ goals, completedGoals, onClearHistory }) {
   const [range, setRange] = useState('month')
 
@@ -169,21 +207,23 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
     [dailyStats, rangeBounds]
   )
 
+  const chartEntries = useMemo(() => getCompactChartEntries(dailyEntries), [dailyEntries])
+
   const dailyChartData = useMemo(
     () => ({
-      labels: dailyEntries.map(item => item.label),
+      labels: chartEntries.map(item => item.label),
       datasets: [
         {
           label: 'Завершённые цели',
-          data: dailyEntries.map(item => item.count),
+          data: chartEntries.map(item => item.count),
           backgroundColor: '#3d6df2',
-          borderRadius: 12,
+          borderRadius: 10,
           borderSkipped: false,
-          maxBarThickness: 18,
+          maxBarThickness: chartEntries.length <= 14 ? 22 : 14,
         },
       ],
     }),
-    [dailyEntries]
+    [chartEntries]
   )
 
   const dailyChartOptions = useMemo(
@@ -203,19 +243,23 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
         x: {
           grid: { display: false },
           ticks: {
-            color: '#7f7468',
+            color: '#727887',
             maxRotation: 0,
             autoSkip: true,
+            maxTicksLimit: 12,
+            font: { size: 10 },
           },
         },
         y: {
           beginAtZero: true,
           ticks: {
             precision: 0,
-            color: '#7f7468',
+            color: '#727887',
+            maxTicksLimit: 5,
+            font: { size: 10 },
           },
           grid: {
-            color: 'rgba(77, 58, 39, 0.08)',
+            color: 'rgba(23, 33, 61, 0.06)',
           },
         },
       },
@@ -258,7 +302,7 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
     [categoryStats]
   )
 
-  const hasDailyData = dailyEntries.length > 0
+  const hasDailyData = chartEntries.length > 0
   const hasCategoryData = categoryStats.some(item => item.count > 0)
   const hasAnyGoals = statGoals.length > 0
 
@@ -286,12 +330,24 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
         ))}
       </div>
 
-      <p className="secondary-text stats-range-caption">{rangeCaption}</p>
+      <div className="stats-range-row">
+        <span className="stats-range-pill">
+          <span className="stats-range-pill-icon" aria-hidden="true">
+            📅
+          </span>
+          {rangeCaption}
+        </span>
+      </div>
 
       <div className="stats-summary-grid">
         <article className="card stats-card stats-card--progress">
           <div className="stats-card-head">
-            <h2 className="stats-card-title">Общий прогресс</h2>
+            <h2 className="stats-card-title">
+              <span className="stats-card-ico" aria-hidden="true">
+                🎯
+              </span>
+              Общий прогресс
+            </h2>
           </div>
           <div className="stats-progress-block">
             <div className="stats-progress-ring" style={{ '--progress': `${progress.percent}%` }}>
@@ -311,7 +367,12 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
 
         <article className="card stats-card">
           <div className="stats-card-head">
-            <h2 className="stats-card-title">Серия дней</h2>
+            <h2 className="stats-card-title">
+              <span className="stats-card-ico" aria-hidden="true">
+                🔥
+              </span>
+              Серия дней
+            </h2>
           </div>
           <div className="stats-big-number">{streak}</div>
           <p className="secondary-text stats-card-foot">
@@ -321,7 +382,12 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
 
         <article className="card stats-card">
           <div className="stats-card-head">
-            <h2 className="stats-card-title">Средняя активность</h2>
+            <h2 className="stats-card-title">
+              <span className="stats-card-ico" aria-hidden="true">
+                📊
+              </span>
+              Средняя активность
+            </h2>
           </div>
           <div className="stats-big-number">{averagePerDay}</div>
           <p className="secondary-text stats-card-foot">
@@ -332,25 +398,34 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
 
       <div className="stats-main-grid">
         <article className="card stats-panel stats-panel--wide">
-          <div className="stats-card-head">
-            <h2 className="stats-card-title">Активность по дням</h2>
+          <div className="stats-card-head stats-card-head--toolbar">
+            <h2 className="stats-card-title">
+              <span className="stats-card-ico" aria-hidden="true">
+                📅
+              </span>
+              Активность по дням
+            </h2>
+            <span className="stats-chart-metric-pill">Завершённые цели</span>
           </div>
           {!hasDailyData ? (
             <p className="secondary-text stats-empty-text">
               Когда появятся завершённые цели, здесь сформируется график активности по дням.
             </p>
           ) : (
-            <div className="stats-chart-scroll">
-              <div className="stats-chart-frame" style={{ minWidth: `${Math.max(dailyEntries.length * 42, 320)}px` }}>
-                <Bar data={dailyChartData} options={dailyChartOptions} />
-              </div>
+            <div className="stats-chart-wrap">
+              <Bar data={dailyChartData} options={dailyChartOptions} />
             </div>
           )}
         </article>
 
         <article className="card stats-panel">
           <div className="stats-card-head">
-            <h2 className="stats-card-title">Категории целей</h2>
+            <h2 className="stats-card-title">
+              <span className="stats-card-ico" aria-hidden="true">
+                🏷️
+              </span>
+              Категории целей
+            </h2>
           </div>
           {!hasCategoryData ? (
             <p className="secondary-text stats-empty-text">
@@ -383,7 +458,12 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
       <div className="stats-bottom-grid">
         <article className="card stats-panel">
           <div className="stats-card-head">
-            <h2 className="stats-card-title">Последние выполненные</h2>
+            <h2 className="stats-card-title">
+              <span className="stats-card-ico" aria-hidden="true">
+                ✅
+              </span>
+              Последние выполненные
+            </h2>
           </div>
           {recentCompleted.length === 0 ? (
             <p className="secondary-text stats-empty-text">
@@ -414,12 +494,19 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
 
         <article className="card stats-panel">
           <div className="stats-card-head">
-            <h2 className="stats-card-title">Выводы и инсайты</h2>
+            <h2 className="stats-card-title">
+              <span className="stats-card-ico" aria-hidden="true">
+                💡
+              </span>
+              Выводы и инсайты
+            </h2>
           </div>
           <div className="stats-insights-list">
-            {insights.map(text => (
+            {insights.map((text, index) => (
               <div key={text} className="stats-insight-row">
-                <span className="stats-insight-icon">✦</span>
+                <span className="stats-insight-icon" aria-hidden="true">
+                  {INSIGHT_ICONS[index % INSIGHT_ICONS.length]}
+                </span>
                 <p>{text}</p>
               </div>
             ))}
