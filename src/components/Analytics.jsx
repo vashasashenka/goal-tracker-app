@@ -59,25 +59,59 @@ function formatChartLabel(key) {
   return date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' }).replace(/\./g, '')
 }
 
-function getRangeCaption(range, filteredGoals) {
-  if (filteredGoals.length === 0) {
-    if (range === 'week') return 'За последние 7 дней'
-    if (range === 'month') return 'За последние 30 дней'
-    if (range === 'year') return 'За последние 365 дней'
-    return 'За всё время'
-  }
+function startOfDay(dateLike) {
+  const date = new Date(dateLike)
+  if (Number.isNaN(date.getTime())) return null
+  date.setHours(0, 0, 0, 0)
+  return date
+}
 
-  const timestamps = filteredGoals
+function addDays(dateLike, days) {
+  const date = startOfDay(dateLike)
+  if (!date) return null
+  date.setDate(date.getDate() + Number(days || 0))
+  return date
+}
+
+function getRangeBounds(range, goals, now = new Date()) {
+  const end = startOfDay(now)
+  if (!end) return null
+
+  if (range === 'week') return { start: addDays(end, -6), end }
+  if (range === 'month') return { start: addDays(end, -29), end }
+  if (range === 'year') return { start: addDays(end, -364), end }
+
+  const timestamps = goals
     .map(goal => new Date(goal.completedAt || goal.createdAt).getTime())
     .filter(value => Number.isFinite(value))
     .sort((a, b) => a - b)
 
-  if (timestamps.length === 0) return 'По выбранному периоду'
-  if (timestamps.length === 1) return formatDashboardDate(timestamps[0])
+  if (timestamps.length === 0) return { start: null, end: null }
+  return {
+    start: startOfDay(timestamps[0]),
+    end: startOfDay(timestamps[timestamps.length - 1]),
+  }
+}
 
-  return `${formatDashboardDate(timestamps[0])} — ${formatDashboardDate(
-    timestamps[timestamps.length - 1]
-  )}`
+function getRangeCaption(range, bounds) {
+  if (!bounds?.start || !bounds?.end) {
+    return range === 'all' ? 'За всё время' : 'По выбранному периоду'
+  }
+  return `${formatDashboardDate(bounds.start)} — ${formatDashboardDate(bounds.end)}`
+}
+
+function getRangeDates(bounds, limit = 500) {
+  if (!bounds?.start || !bounds?.end) return []
+  const dates = []
+  let cursor = new Date(bounds.start)
+  let guard = 0
+  while (cursor.getTime() <= bounds.end.getTime() && guard < limit) {
+    const key = cursor.toISOString().slice(0, 10)
+    dates.push(key)
+    cursor.setDate(cursor.getDate() + 1)
+    guard += 1
+  }
+  return dates
 }
 
 function Analytics({ goals, completedGoals, onClearHistory }) {
@@ -111,18 +145,28 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
     [averagePerDay, bestDay, progress, streak]
   )
 
-  const rangeCaption = useMemo(() => getRangeCaption(range, filteredGoals), [filteredGoals, range])
+  const rangeBounds = useMemo(() => getRangeBounds(range, filteredGoals), [filteredGoals, range])
+  const rangeCaption = useMemo(() => getRangeCaption(range, rangeBounds), [range, rangeBounds])
 
   const dailyEntries = useMemo(
-    () =>
-      Object.entries(dailyStats)
+    () => {
+      const keys = getRangeDates(rangeBounds)
+      if (keys.length > 0) {
+        return keys.map(date => ({
+          date,
+          count: Number(dailyStats[date] || 0),
+          label: formatChartLabel(date),
+        }))
+      }
+      return Object.entries(dailyStats)
         .sort((a, b) => a[0].localeCompare(b[0]))
         .map(([date, count]) => ({
           date,
           count,
           label: formatChartLabel(date),
-        })),
-    [dailyStats]
+        }))
+    },
+    [dailyStats, rangeBounds]
   )
 
   const dailyChartData = useMemo(
