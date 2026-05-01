@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import Analytics from './components/Analytics'
+import { normalizeGoalCategory, resolveGoalCreatedAt } from './utils/statistics'
 
 function normalizeApiBase(url) {
   const s = String(url ?? '').trim()
@@ -343,8 +345,15 @@ async function fetchPreviewMicrogoals(text, existingTexts, count = AI_SUGGEST_SL
 
 function normalizeGoal(goal) {
   if (goal == null) return null
+  const text = String(goal.text || goal.title || '').trim()
+  const finishedAt = String(goal.finishedAt || goal.completedAt || '').trim() || null
   return {
     ...goal,
+    text,
+    category: normalizeGoalCategory(goal.category, text),
+    createdAt: resolveGoalCreatedAt(goal),
+    finishedAt,
+    completedAt: finishedAt,
     microGoals: normalizeMicroGoalsList(goal.microGoals),
   }
 }
@@ -426,9 +435,9 @@ function App() {
   const [taskDraft, setTaskDraft] = useState('')
   const [taskDateDraft, setTaskDateDraft] = useState('')
   const [taskEditorBusy, setTaskEditorBusy] = useState(false)
-  const [expandedHistoryId, setExpandedHistoryId] = useState(null)
   const [recommendationsCache, setRecommendationsCache] = useState({})
   const generatedDateInputRef = useRef(null)
+  const generationInputRef = useRef(null)
 
   const normalizedUserEmail = normalizeEmail(userEmail)
   const sessionToken = String(authToken || '').trim()
@@ -497,6 +506,14 @@ function App() {
     })
     return () => cancelAnimationFrame(frame)
   }, [generatedDateEditor])
+
+  useEffect(() => {
+    if (activeTab !== 'generate' || showGeneratedResult) return
+    const frame = requestAnimationFrame(() => {
+      generationInputRef.current?.focus()
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [activeTab, showGeneratedResult])
 
   useEffect(() => {
     const goOnline = () => setIsOnline(true)
@@ -589,7 +606,6 @@ function App() {
     setRecommendations([])
     setRecommendationsSource('')
     setRecommendationsCache({})
-    setExpandedHistoryId(null)
     setTaskEditor(null)
     setTaskDraft('')
     setTaskDateDraft('')
@@ -662,7 +678,10 @@ function App() {
     [completedGoals]
   )
 
-  const activeGoal = normalizeGoal(safeGoals.find(g => g.id === activeGoalId) ?? null)
+  const activeGoal = useMemo(
+    () => normalizeGoal(safeGoals.find(g => g.id === activeGoalId) ?? null),
+    [safeGoals, activeGoalId]
+  )
 
   const agendaMicroTasks = useMemo(() => {
     const list = activeGoal?.microGoals
@@ -678,7 +697,7 @@ function App() {
     if (!sourceText || sourceText !== activeGoalText) return []
 
     return Array.isArray(recommendations) ? recommendations : []
-  }, [activeGoal?.id, activeGoal?.text, recommendations, recommendationsSource])
+  }, [activeGoal?.text, recommendations, recommendationsSource])
 
   function switchActiveGoal(delta) {
     if (safeGoals.length <= 1) return
@@ -700,89 +719,6 @@ function App() {
     if (count >= 3) return 'Средняя'
     return 'Низкая'
   }, [agendaMicroTasks])
-
-  /** Последние 7 календарных дней (включая сегодня): сколько целей завершено за каждый день. */
-  const journalBars = useMemo(() => {
-    const strip = []
-    const now = new Date()
-    for (let i = 6; i >= 0; i -= 1) {
-      const d = new Date(now)
-      d.setHours(0, 0, 0, 0)
-      d.setDate(d.getDate() - i)
-      strip.push({
-        date: d,
-        count: 0,
-        weekday: d.toLocaleDateString('ru-RU', { weekday: 'short' }),
-        dayNum: d.getDate(),
-      })
-    }
-
-    const sameDay = (a, b) =>
-      a.getFullYear() === b.getFullYear() &&
-      a.getMonth() === b.getMonth() &&
-      a.getDate() === b.getDate()
-
-    safeCompletedGoals.forEach(goal => {
-      const when = new Date(goal.finishedAt || Date.now())
-      const slot = strip.find(s => sameDay(s.date, when))
-      if (slot) slot.count += 1
-    })
-
-    const values = strip.map(s => s.count)
-    const max = Math.max(...values, 0)
-    const hasData = max > 0
-    const heights = values.map(v => {
-      if (!hasData) return 0
-      if (v === 0) return 12
-      return Math.max(24, Math.round((v / max) * 100))
-    })
-
-    return { strip, values, hasData, heights, max }
-  }, [safeCompletedGoals])
-
-  const journalRangeLabel = useMemo(() => {
-    const strip = journalBars.strip
-    if (!strip?.length) return ''
-    const a = strip[0].date
-    const b = strip[strip.length - 1].date
-    const o = { day: 'numeric', month: 'short' }
-    return `${a.toLocaleDateString('ru-RU', o)} — ${b.toLocaleDateString('ru-RU', o)}`
-  }, [journalBars.strip])
-
-  const efficiencyStats = useMemo(() => {
-    const allTasks = [...safeGoals, ...safeCompletedGoals].flatMap(g => g.microGoals || [])
-    if (allTasks.length === 0) {
-      return { hasData: false, done: 0, pending: 0 }
-    }
-
-    const doneCount = allTasks.filter(t => t.completed).length
-    const pendingCount = allTasks.filter(t => !t.completed).length
-    const total = allTasks.length || 1
-    const base = [
-      { key: 'done', value: (doneCount / total) * 100 },
-      { key: 'pending', value: (pendingCount / total) * 100 },
-    ]
-    const rounded = base.map(item => ({ ...item, rounded: Math.floor(item.value) }))
-    const sum = rounded.reduce((acc, item) => acc + item.rounded, 0)
-    let remainder = 100 - sum
-    const order = [...rounded].sort(
-      (a, b) => b.value - b.rounded - (a.value - a.rounded)
-    )
-    for (let i = 0; i < order.length && remainder > 0; i += 1) {
-      const target = rounded.find(item => item.key === order[i].key)
-      if (target) {
-        target.rounded += 1
-        remainder -= 1
-      }
-    }
-
-    const pick = key => rounded.find(item => item.key === key)?.rounded ?? 0
-    return {
-      hasData: true,
-      done: pick('done'),
-      pending: pick('pending'),
-    }
-  }, [safeGoals, safeCompletedGoals])
 
   function hasSimilarTaskDuplicate(goal, text) {
     const normalized = normalizeTaskText(text)
@@ -806,36 +742,6 @@ function App() {
     if (!t) return null
     return goalsList.find(g => goalTitlesAlign(g.text, t)) ?? null
   }
-
-  const historyItems = useMemo(() => {
-    return [...safeCompletedGoals]
-      .sort(
-        (a, b) =>
-          new Date(b.finishedAt || 0).getTime() - new Date(a.finishedAt || 0).getTime()
-      )
-      .map(goal => {
-        const when = new Date(goal.finishedAt || Date.now())
-        const y = when.getFullYear()
-        const nowY = new Date().getFullYear()
-        const microGoals = normalizeMicroGoalsList(goal.microGoals).sort(compareMicroGoalsByCheckpoint)
-        return {
-          id: goal.id,
-          text: goal.text,
-          microGoals,
-          when,
-          dateStr: when.toLocaleDateString('ru-RU', {
-            day: 'numeric',
-            month: 'short',
-            ...(y !== nowY ? { year: 'numeric' } : {}),
-          }),
-          timeStr: when.toLocaleTimeString('ru-RU', {
-            hour: '2-digit',
-            minute: '2-digit',
-          }),
-          stepsCount: microGoals.length,
-        }
-      })
-  }, [safeCompletedGoals])
 
   function openTaskEditor(goalId, task = null) {
     const goal = normalizeGoal(safeGoals.find(item => item.id === goalId) ?? null)
@@ -915,6 +821,8 @@ function App() {
         body: {
           text: normalizedGoal.text,
           microGoals: normalizedGoal.microGoals,
+          category: normalizedGoal.category,
+          createdAt: normalizedGoal.createdAt,
         },
         sessionToken,
       })
@@ -924,6 +832,8 @@ function App() {
   async function createGoal(text) {
     const goalText = String(text || '').trim()
     if (!goalText) return null
+    const category = normalizeGoalCategory('', goalText)
+    const createdAt = new Date().toISOString()
 
     const normalized = hasAccountAccess
       ? normalizeGoal(
@@ -932,6 +842,8 @@ function App() {
             body: {
               text: goalText,
               microGoals: [],
+              category,
+              createdAt,
             },
             sessionToken,
           })
@@ -939,6 +851,8 @@ function App() {
       : normalizeGoal({
           id: Date.now(),
           text: goalText,
+          category,
+          createdAt,
           microGoals: [],
         })
     setGoals(prev => [normalized, ...prev])
@@ -961,7 +875,8 @@ function App() {
     const allDone = microGoals.length > 0 && microGoals.every(item => item.completed)
 
     if (allDone) {
-      const finishedGoal = { ...updatedGoal, finishedAt: new Date().toISOString() }
+      const finishedAt = new Date().toISOString()
+      const finishedGoal = { ...updatedGoal, finishedAt, completedAt: finishedAt }
       if (hasAccountAccess) {
         const savedFinishedGoal = normalizeGoal(
           await apiRequest('/api/completed-goals', {
@@ -976,7 +891,7 @@ function App() {
       }
 
       setGoals(prev => prev.filter(item => item.id !== goalId))
-      setCompletedGoals(prev => [finishedGoal, ...prev])
+      setCompletedGoals(prev => [normalizeGoal(finishedGoal), ...prev])
       return
     }
 
@@ -1098,7 +1013,7 @@ function App() {
     if (activeTab === 'agenda' && activeGoal?.text) {
       requestPreviewSuggestions(activeGoal.text)
     }
-  }, [activeTab, activeGoal?.id, activeGoal?.text, requestPreviewSuggestions])
+  }, [activeTab, activeGoal, requestPreviewSuggestions])
 
   async function addRecommendationToActiveGoal(item) {
     if (item.placeholder) return
@@ -1677,7 +1592,6 @@ function App() {
       setRecommendations([])
       setRecommendationsSource('')
       setRecommendationsCache({})
-      setExpandedHistoryId(null)
       closeTaskEditor()
       resetGenerationUi()
     }
@@ -2058,9 +1972,20 @@ function App() {
                 }
               >
                 {!activeGoal ? (
-                  <p className="secondary-text goal-hero-empty">
-                    Пока нет целей. Откройте ✨ Генерацию и добавьте первую.
-                  </p>
+                  <button
+                    type="button"
+                    className="goal-hero-empty-cta"
+                    onClick={() => {
+                      beginNewGoalGeneration()
+                      setActiveTab('generate')
+                    }}
+                    aria-label="Написать новую цель"
+                  >
+                    <span className="goal-hero-empty-title">Напишите сюда цель</span>
+                    <span className="secondary-text goal-hero-empty-hint">
+                      Например: подготовиться к экзамену, начать бегать или навести порядок дома
+                    </span>
+                  </button>
                 ) : (
                   <div className="goal-hero-top">
                     <div className="goal-hero-text-block">
@@ -2224,10 +2149,6 @@ function App() {
               )}
             </aside>
           </div>
-
-          <button className="fab" onClick={() => setActiveTab('generate')}>
-            +
-          </button>
         </section>
       )}
 
@@ -2246,6 +2167,7 @@ function App() {
               <div className="empty-space" />
               <h2 className="center-title">Что нужно разбить на микрошаги?</h2>
               <textarea
+                ref={generationInputRef}
                 className="big-input"
                 value={generationInput}
                 onChange={e => setGenerationInput(e.target.value)}
@@ -2434,126 +2356,11 @@ function App() {
       )}
 
       {!showProfile && activeTab === 'journal' && (
-        <section className="screen screen--journal journal-screen">
-          <header className="screen-header">
-            <div>
-              <h1>Статистика</h1>
-              <small className="journal-subtitle">
-                Завершённые цели за 7 дней · {journalRangeLabel}
-              </small>
-            </div>
-          </header>
-
-          <h2 className="journal-section-title">Завершённые цели по дням</h2>
-          {!journalBars.hasData ? (
-            <div className="journal-empty-card">
-              <p className="journal-empty-title">Пока пусто</p>
-              <p className="secondary-text">
-                На повестке отметьте все микрошаги цели — она попадёт сюда, и график заполнится.
-              </p>
-            </div>
-          ) : (
-            <div className="bars-wrap bars-wrap--journal">
-              {journalBars.strip.map((slot, index) => (
-                <div key={slot.date.getTime()} className="bar-col">
-                  <div
-                    className={`bar ${journalBars.values[index] === 0 ? 'bar--empty' : ''}`}
-                    style={{ height: `${journalBars.heights[index]}px` }}
-                  />
-                  <small className="bar-weekday">{slot.weekday}</small>
-                  <small className="bar-daynum">{slot.dayNum}</small>
-                  <small className="bar-count">{journalBars.values[index]}</small>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <h2 className="journal-section-title journal-micro-h2">Микрошаги</h2>
-          <div className="card journal-efficiency-card">
-            {!efficiencyStats.hasData ? (
-              <div className="journal-efficiency-empty">
-                <p className="secondary-text">
-                  Когда появятся микрошаги на повестке или в истории, здесь будут доли «Сделано» и «В работе».
-                </p>
-              </div>
-            ) : (
-              <ul className="journal-efficiency-list journal-micro-simple">
-                <li>
-                  <span className="eff-dot eff-dot--ai" />
-                  Сделано — <strong>{efficiencyStats.done}%</strong>
-                </li>
-                <li>
-                  <span className="eff-dot eff-dot--pending" />
-                  В работе — <strong>{efficiencyStats.pending}%</strong>
-                </li>
-              </ul>
-            )}
-          </div>
-
-          <div className="journal-history-head">
-            <h2 className="journal-section-title journal-section-title--inline">История</h2>
-            <button type="button" className="text-button journal-clear-btn" onClick={clearCompletedHistory}>
-              Очистить
-            </button>
-          </div>
-          {historyItems.length === 0 ? (
-            <p className="secondary-text journal-history-empty">
-              Завершённые цели появятся здесь с датой и временем.
-            </p>
-          ) : (
-            <div className="journal-history-list">
-              {historyItems.map(item => (
-                <button
-                  key={item.id}
-                  type="button"
-                  className={`history-row history-row--rich ${expandedHistoryId === item.id ? 'history-row--expanded' : ''}`}
-                  onClick={() => setExpandedHistoryId(prev => (prev === item.id ? null : item.id))}
-                >
-                  <div className="history-row-main">
-                    <span className="history-check">✓</span>
-                    <span className="history-title">{item.text}</span>
-                  </div>
-                  <div className="history-meta">
-                    <span>{item.dateStr}</span>
-                    <span className="history-meta-sep">·</span>
-                    <span>{item.timeStr}</span>
-                    {item.stepsCount > 0 && (
-                      <>
-                        <span className="history-meta-sep">·</span>
-                        <span>микрошагов: {item.stepsCount}</span>
-                      </>
-                    )}
-                  </div>
-                  {expandedHistoryId === item.id && (
-                    <div className="history-details">
-                      {item.microGoals.length === 0 ? (
-                        <p className="secondary-text history-details-empty">Для этой цели микрошаги не сохранены.</p>
-                      ) : (
-                        <ul className="history-steps-list">
-                          {item.microGoals.map(step => (
-                            <li key={step.id}>
-                              <span className={`history-step-mark ${step.completed ? 'history-step-mark--done' : ''}`}>
-                                {step.completed ? '✓' : '•'}
-                              </span>
-                              <div className="history-step-body">
-                                <span>{step.text}</span>
-                                <div className="history-step-meta">
-                                  {step.recommendedDate && (
-                                    <span>до {formatRecommendedDate(step.recommendedDate, { day: 'numeric', month: 'long' })}</span>
-                                  )}
-                                </div>
-                              </div>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
-                  )}
-                </button>
-              ))}
-            </div>
-          )}
-        </section>
+        <Analytics
+          goals={safeGoals}
+          completedGoals={safeCompletedGoals}
+          onClearHistory={clearCompletedHistory}
+        />
       )}
 
       {showProfile && (
@@ -2596,7 +2403,7 @@ function App() {
             ✨ Генерация
           </button>
           <button className={activeTab === 'journal' ? 'active' : ''} onClick={() => setActiveTab('journal')}>
-            📅 Журнал
+            📊 Статистика
           </button>
         </nav>
       )}

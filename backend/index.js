@@ -91,6 +91,22 @@ async function ensureSchema() {
   `)
   await pool.query('ALTER TABLE goals ADD COLUMN IF NOT EXISTS owner_key TEXT')
   await pool.query('ALTER TABLE completed_goals ADD COLUMN IF NOT EXISTS owner_key TEXT')
+  await pool.query("ALTER TABLE goals ADD COLUMN IF NOT EXISTS category TEXT DEFAULT 'Другое'")
+  await pool.query('ALTER TABLE goals ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()')
+  await pool.query("ALTER TABLE completed_goals ADD COLUMN IF NOT EXISTS category TEXT DEFAULT 'Другое'")
+  await pool.query(
+    'ALTER TABLE completed_goals ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()'
+  )
+  await pool.query(
+    "UPDATE goals SET category = 'Другое' WHERE category IS NULL OR BTRIM(category) = ''"
+  )
+  await pool.query('UPDATE goals SET created_at = NOW() WHERE created_at IS NULL')
+  await pool.query(
+    "UPDATE completed_goals SET category = 'Другое' WHERE category IS NULL OR BTRIM(category) = ''"
+  )
+  await pool.query(
+    'UPDATE completed_goals SET created_at = COALESCE(finished_at, NOW()) WHERE created_at IS NULL'
+  )
   await pool.query('CREATE INDEX IF NOT EXISTS idx_user_sessions_user_id ON user_sessions(user_id)')
   await pool.query(
     'CREATE INDEX IF NOT EXISTS idx_password_reset_codes_user_id ON password_reset_codes(user_id)'
@@ -803,6 +819,8 @@ app.get('/api/goals', async (req, res) => {
       result.rows.map(row => ({
         id: Number(row.id),
         text: row.text,
+        category: row.category,
+        createdAt: row.created_at,
         microGoals: row.micro_goals,
       }))
     )
@@ -826,6 +844,8 @@ app.get('/api/completed-goals', async (req, res) => {
       result.rows.map(row => ({
         id: Number(row.id),
         text: row.text,
+        category: row.category,
+        createdAt: row.created_at,
         microGoals: row.micro_goals,
         finishedAt: row.finished_at,
       }))
@@ -869,7 +889,7 @@ app.post('/api/preview-microgoals', async (req, res) => {
   }
 })
 app.post('/api/goals', async (req, res) => {
-  const { text, microGoals: rawMicroGoals } = req.body
+  const { text, microGoals: rawMicroGoals, category = 'Другое', createdAt } = req.body
 
   if (!text || !text.trim()) {
     return res.status(400).json({ error: 'Текст цели обязателен' })
@@ -904,14 +924,17 @@ app.post('/api/goals', async (req, res) => {
     }
 
     const id = Date.now()
+    const normalizedCreatedAt = createdAt || new Date().toISOString()
     await pool.query(
-      'INSERT INTO goals (id, text, micro_goals, owner_key) VALUES ($1, $2, $3, $4)',
-      [id, text, JSON.stringify(microGoals), auth.ownerKey]
+      'INSERT INTO goals (id, text, category, created_at, micro_goals, owner_key) VALUES ($1, $2, $3, $4, $5, $6)',
+      [id, text, category, normalizedCreatedAt, JSON.stringify(microGoals), auth.ownerKey]
     )
 
     res.status(201).json({
       id,
       text,
+      category,
+      createdAt: normalizedCreatedAt,
       microGoals,
     })
   } catch (error) {
@@ -961,15 +984,20 @@ app.post('/api/goals/:id/generate-one', async (req, res) => {
 
 app.put('/api/goals/:id', async (req, res) => {
   const goalId = Number(req.params.id)
-  const { text, microGoals } = req.body
+  const { text, microGoals, category = 'Другое', createdAt } = req.body
 
   try {
     await ensureSchemaReady()
     const auth = await requireAuth(req, res)
     if (!auth) return
     const result = await pool.query(
-      'UPDATE goals SET text = $1, micro_goals = $2 WHERE id = $3 AND owner_key = $4 RETURNING *',
-      [text, JSON.stringify(microGoals), goalId, auth.ownerKey]
+      `
+      UPDATE goals
+      SET text = $1, micro_goals = $2, category = $3, created_at = COALESCE($4, created_at)
+      WHERE id = $5 AND owner_key = $6
+      RETURNING *
+      `,
+      [text, JSON.stringify(microGoals), category, createdAt || null, goalId, auth.ownerKey]
     )
 
     if (result.rows.length === 0) {
@@ -981,6 +1009,8 @@ app.put('/api/goals/:id', async (req, res) => {
     res.json({
       id: Number(row.id),
       text: row.text,
+      category: row.category,
+      createdAt: row.created_at,
       microGoals: row.micro_goals,
     })
   } catch (error) {
@@ -1018,7 +1048,7 @@ app.delete('/api/goals/:id', async (req, res) => {
 })
 
 app.post('/api/completed-goals', async (req, res) => {
-  const { id, text, microGoals, finishedAt } = req.body
+  const { id, text, microGoals, finishedAt, category = 'Другое', createdAt } = req.body
 
   try {
     await ensureSchemaReady()
@@ -1026,11 +1056,11 @@ app.post('/api/completed-goals', async (req, res) => {
     if (!auth) return
     await pool.query(
       `
-      INSERT INTO completed_goals (id, text, micro_goals, finished_at, owner_key)
-      VALUES ($1, $2, $3, $4, $5)
+      INSERT INTO completed_goals (id, text, category, created_at, micro_goals, finished_at, owner_key)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
       ON CONFLICT (id) DO NOTHING
       `,
-      [id, text, JSON.stringify(microGoals), finishedAt || null, auth.ownerKey]
+      [id, text, category, createdAt || finishedAt || new Date().toISOString(), JSON.stringify(microGoals), finishedAt || null, auth.ownerKey]
     )
 
     await pool.query('DELETE FROM goals WHERE id = $1 AND owner_key = $2', [id, auth.ownerKey])
@@ -1038,6 +1068,8 @@ app.post('/api/completed-goals', async (req, res) => {
     res.status(201).json({
       id,
       text,
+      category,
+      createdAt: createdAt || finishedAt || new Date().toISOString(),
       microGoals,
       finishedAt,
     })

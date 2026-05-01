@@ -1,269 +1,389 @@
+import { useMemo, useState } from 'react'
 import {
-  Chart as ChartJS,
   ArcElement,
-  Tooltip,
-  Legend,
-  CategoryScale,
-  LinearScale,
   BarElement,
-} from 'chart.js'
-import { Doughnut, Bar } from 'react-chartjs-2'
-
-ChartJS.register(
-  ArcElement,
-  Tooltip,
-  Legend,
   CategoryScale,
+  Chart as ChartJS,
+  Legend,
   LinearScale,
-  BarElement
-)
+  Tooltip,
+} from 'chart.js'
+import { Bar, Doughnut } from 'react-chartjs-2'
+import {
+  filterGoals,
+  formatDaysLabel,
+  formatGoalsPerDayLabel,
+  generateInsights,
+  getAveragePerDay,
+  getBestDay,
+  getCategoryStats,
+  getDailyStats,
+  getProgress,
+  getRecentCompleted,
+  getStreak,
+  normalizeGoalForStats,
+} from '../utils/statistics'
 
-function Analytics({ goals, completedGoals }) {
-  const activeAcceptedTasks = goals.flatMap(goal =>
-    goal.microGoals.filter(mg => !mg.suggested)
-  )
+ChartJS.register(ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement)
 
-  const completedTasks = activeAcceptedTasks.filter(task => task.completed).length
-  const uncompletedTasks = activeAcceptedTasks.filter(task => !task.completed).length
-  const totalTasks = completedTasks + uncompletedTasks
+const RANGE_OPTIONS = [
+  { id: 'week', label: 'Неделя' },
+  { id: 'month', label: 'Месяц' },
+  { id: 'year', label: 'Год' },
+  { id: 'all', label: 'Все время' },
+]
 
-  const averageProgress =
-    totalTasks === 0 ? 0 : Math.round((completedTasks / totalTasks) * 100)
-
-  const productiveGoal =
-    goals.length === 0
-      ? '—'
-      : goals.reduce((best, current) => {
-          const bestCompleted = best.microGoals.filter(
-            mg => !mg.suggested && mg.completed
-          ).length
-
-          const currentCompleted = current.microGoals.filter(
-            mg => !mg.suggested && mg.completed
-          ).length
-
-          return currentCompleted > bestCompleted ? current : best
-        }, goals[0]).text
-
-  const doughnutData = {
-    labels: ['Выполнено', 'Невыполнено'],
-    datasets: [
-      {
-        data: [completedTasks, uncompletedTasks],
-        backgroundColor: ['#c9bea4', '#efefef'],
-        borderWidth: 0,
-        hoverOffset: 4,
-      },
-    ],
-  }
-
-  const goalsProgressData = {
-    labels: goals.map(goal => goal.text),
-    datasets: [
-      {
-        label: 'Прогресс',
-        data: goals.map(goal => {
-          const accepted = goal.microGoals.filter(mg => !mg.suggested)
-          const done = accepted.filter(mg => mg.completed).length
-          return accepted.length === 0
-            ? 0
-            : Math.round((done / accepted.length) * 100)
-        }),
-        backgroundColor: '#c9bea4',
-        borderRadius: 8,
-      },
-    ],
-  }
-
-  return (
-    <div style={{ marginTop: '20px' }}>
-      <h2 style={{ marginBottom: '20px' }}>📊 Аналитика</h2>
-
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: '1fr 1fr',
-          gap: '20px',
-          marginBottom: '24px',
-        }}
-      >
-        <div
-          style={{
-            background: '#f7f7f7',
-            padding: '24px',
-            borderRadius: '16px',
-            boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
-          }}
-        >
-          <h3 style={{ marginTop: 0, marginBottom: '18px', color: '#23384d' }}>
-            Аналитика системы
-          </h3>
-
-          <div style={{ display: 'grid', gap: '12px' }}>
-            <div style={rowStyle}>
-              <span>Всего задач</span>
-              <strong>{totalTasks}</strong>
-            </div>
-
-            <div style={rowStyle}>
-              <span>Выполнено</span>
-              <strong>{completedTasks}</strong>
-            </div>
-
-            <div style={rowStyle}>
-              <span>Невыполнено</span>
-              <strong>{uncompletedTasks}</strong>
-            </div>
-
-            <div style={rowStyle}>
-              <span>Средний прогресс</span>
-              <strong>{averageProgress}%</strong>
-            </div>
-
-            <div style={rowStyle}>
-              <span>Завершённые цели</span>
-              <strong>{completedGoals.length}</strong>
-            </div>
-
-            <div style={rowStyle}>
-              <span>Самая продуктивная цель</span>
-              <strong style={{ textAlign: 'right', maxWidth: '180px' }}>
-                {productiveGoal}
-              </strong>
-            </div>
-          </div>
-        </div>
-
-        <div
-          style={{
-            background: '#f7f7f7',
-            padding: '24px',
-            borderRadius: '16px',
-            boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            justifyContent: 'center',
-            minHeight: '320px',
-          }}
-        >
-          <h3
-            style={{
-              marginTop: 0,
-              marginBottom: '18px',
-              color: '#23384d',
-              alignSelf: 'flex-start',
-            }}
-          >
-            Общий прогресс
-          </h3>
-
-          <div
-            style={{
-              position: 'relative',
-              width: '240px',
-              height: '240px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            <Doughnut
-              data={doughnutData}
-              options={{
-                responsive: true,
-                maintainAspectRatio: false,
-                cutout: '72%',
-                plugins: {
-                  legend: {
-                    position: 'top',
-                    labels: {
-                      boxWidth: 12,
-                      font: {
-                        size: 13,
-                      },
-                    },
-                  },
-                },
-              }}
-            />
-
-            <div
-              style={{
-                position: 'absolute',
-                fontSize: '36px',
-                fontWeight: '700',
-                color: '#7d7461',
-              }}
-            >
-              {averageProgress}%
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div
-        style={{
-          background: '#f7f7f7',
-          padding: '24px',
-          borderRadius: '16px',
-          boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
-        }}
-      >
-        <h3 style={{ marginTop: 0, marginBottom: '18px', color: '#23384d' }}>
-          Прогресс по целям
-        </h3>
-
-        {goals.length === 0 ? (
-          <p style={{ color: '#666' }}>
-            Пока нет активных целей для отображения графика.
-          </p>
-        ) : (
-          <div style={{ height: '340px' }}>
-            <Bar
-              data={goalsProgressData}
-              options={{
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                  legend: {
-                    display: false,
-                  },
-                },
-                scales: {
-                  y: {
-                    beginAtZero: true,
-                    max: 100,
-                    ticks: {
-                      stepSize: 20,
-                    },
-                    grid: {
-                      color: '#e5e5e5',
-                    },
-                  },
-                  x: {
-                    grid: {
-                      display: false,
-                    },
-                  },
-                },
-              }}
-            />
-          </div>
-        )}
-      </div>
-    </div>
-  )
+const CATEGORY_COLORS = {
+  Учёба: '#3d6df2',
+  Работа: '#8a5cf6',
+  Личное: '#f6be4f',
+  Другое: '#57b26a',
 }
 
-const rowStyle = {
-  display: 'flex',
-  justifyContent: 'space-between',
-  alignItems: 'center',
-  background: '#ffffff',
-  padding: '12px 14px',
-  borderRadius: '10px',
-  color: '#23384d',
+function formatDashboardDate(value) {
+  const date = value ? new Date(value) : null
+  if (!date || Number.isNaN(date.getTime())) return 'Без даты'
+  return date
+    .toLocaleDateString('ru-RU', {
+      day: 'numeric',
+      month: 'short',
+      year: date.getFullYear() !== new Date().getFullYear() ? 'numeric' : undefined,
+    })
+    .replace(/\s?г\.$/, '')
+    .replace(/\./g, '')
+}
+
+function formatChartLabel(key) {
+  const date = new Date(`${key}T12:00:00`)
+  if (Number.isNaN(date.getTime())) return key
+  return date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' }).replace(/\./g, '')
+}
+
+function getRangeCaption(range, filteredGoals) {
+  if (filteredGoals.length === 0) {
+    if (range === 'week') return 'За последние 7 дней'
+    if (range === 'month') return 'За текущий месяц'
+    if (range === 'year') return 'За текущий год'
+    return 'За всё время'
+  }
+
+  const timestamps = filteredGoals
+    .map(goal => new Date(goal.completedAt || goal.createdAt).getTime())
+    .filter(value => Number.isFinite(value))
+    .sort((a, b) => a - b)
+
+  if (timestamps.length === 0) return 'По выбранному периоду'
+  if (timestamps.length === 1) return formatDashboardDate(timestamps[0])
+
+  return `${formatDashboardDate(timestamps[0])} — ${formatDashboardDate(
+    timestamps[timestamps.length - 1]
+  )}`
+}
+
+function Analytics({ goals, completedGoals, onClearHistory }) {
+  const [range, setRange] = useState('month')
+
+  const statGoals = useMemo(
+    () => [
+      ...goals.map(goal => normalizeGoalForStats(goal, { completed: false })),
+      ...completedGoals.map(goal => normalizeGoalForStats(goal, { completed: true })),
+    ],
+    [goals, completedGoals]
+  )
+
+  const filteredGoals = useMemo(() => filterGoals(statGoals, range), [statGoals, range])
+  const progress = useMemo(() => getProgress(filteredGoals), [filteredGoals])
+  const streak = useMemo(() => getStreak(filteredGoals), [filteredGoals])
+  const dailyStats = useMemo(() => getDailyStats(filteredGoals), [filteredGoals])
+  const categoryStats = useMemo(() => getCategoryStats(filteredGoals), [filteredGoals])
+  const recentCompleted = useMemo(() => getRecentCompleted(filteredGoals), [filteredGoals])
+  const bestDay = useMemo(() => getBestDay(filteredGoals), [filteredGoals])
+  const averagePerDay = useMemo(() => getAveragePerDay(filteredGoals), [filteredGoals])
+
+  const insights = useMemo(
+    () =>
+      generateInsights({
+        bestDay,
+        avg: averagePerDay,
+        streak,
+        progress,
+      }),
+    [averagePerDay, bestDay, progress, streak]
+  )
+
+  const rangeCaption = useMemo(() => getRangeCaption(range, filteredGoals), [filteredGoals, range])
+
+  const dailyEntries = useMemo(
+    () =>
+      Object.entries(dailyStats)
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([date, count]) => ({
+          date,
+          count,
+          label: formatChartLabel(date),
+        })),
+    [dailyStats]
+  )
+
+  const dailyChartData = useMemo(
+    () => ({
+      labels: dailyEntries.map(item => item.label),
+      datasets: [
+        {
+          label: 'Завершённые цели',
+          data: dailyEntries.map(item => item.count),
+          backgroundColor: '#3d6df2',
+          borderRadius: 12,
+          borderSkipped: false,
+          maxBarThickness: 18,
+        },
+      ],
+    }),
+    [dailyEntries]
+  )
+
+  const dailyChartOptions = useMemo(
+    () => ({
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          displayColors: false,
+          callbacks: {
+            label: context => `${context.parsed.y} завершено`,
+          },
+        },
+      },
+      scales: {
+        x: {
+          grid: { display: false },
+          ticks: {
+            color: '#7f7468',
+            maxRotation: 0,
+            autoSkip: true,
+          },
+        },
+        y: {
+          beginAtZero: true,
+          ticks: {
+            precision: 0,
+            color: '#7f7468',
+          },
+          grid: {
+            color: 'rgba(77, 58, 39, 0.08)',
+          },
+        },
+      },
+    }),
+    []
+  )
+
+  const categoryChartData = useMemo(
+    () => ({
+      labels: categoryStats.map(item => item.category),
+      datasets: [
+        {
+          data: categoryStats.map(item => item.count),
+          backgroundColor: categoryStats.map(item => CATEGORY_COLORS[item.category]),
+          borderWidth: 0,
+          hoverOffset: 6,
+        },
+      ],
+    }),
+    [categoryStats]
+  )
+
+  const categoryChartOptions = useMemo(
+    () => ({
+      responsive: true,
+      maintainAspectRatio: false,
+      cutout: '62%',
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: context => {
+              const percent = categoryStats[context.dataIndex]?.percent ?? 0
+              return `${context.label}: ${context.parsed} (${percent}%)`
+            },
+          },
+        },
+      },
+    }),
+    [categoryStats]
+  )
+
+  const hasDailyData = dailyEntries.length > 0
+  const hasCategoryData = categoryStats.some(item => item.count > 0)
+  const hasAnyGoals = statGoals.length > 0
+
+  return (
+    <section className="screen screen--journal journal-screen stats-screen">
+      <header className="screen-header stats-screen-header">
+        <div>
+          <h1>Статистика выполнения целей</h1>
+          <p className="secondary-text stats-screen-copy">
+            Анализируйте свой прогресс и достигайте большего
+          </p>
+        </div>
+      </header>
+
+      <div className="stats-filter-row" role="tablist" aria-label="Период статистики">
+        {RANGE_OPTIONS.map(option => (
+          <button
+            key={option.id}
+            type="button"
+            className={`stats-filter-chip ${range === option.id ? 'stats-filter-chip--active' : ''}`}
+            onClick={() => setRange(option.id)}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+
+      <p className="secondary-text stats-range-caption">{rangeCaption}</p>
+
+      <div className="stats-summary-grid">
+        <article className="card stats-card stats-card--progress">
+          <div className="stats-card-head">
+            <h2 className="stats-card-title">Общий прогресс</h2>
+          </div>
+          <div className="stats-progress-block">
+            <div className="stats-progress-ring" style={{ '--progress': `${progress.percent}%` }}>
+              <div className="stats-progress-ring-center">
+                <strong>{progress.percent}%</strong>
+              </div>
+            </div>
+            <div className="stats-progress-text">
+              <span className="secondary-text">Выполнено</span>
+              <strong>
+                {progress.completed} из {progress.total}
+              </strong>
+              <small>целей</small>
+            </div>
+          </div>
+        </article>
+
+        <article className="card stats-card">
+          <div className="stats-card-head">
+            <h2 className="stats-card-title">Серия дней</h2>
+          </div>
+          <div className="stats-big-number">{streak}</div>
+          <p className="secondary-text stats-card-foot">
+            {streak > 0 ? `${formatDaysLabel(streak)} подряд` : 'Пока нет активной серии'}
+          </p>
+        </article>
+
+        <article className="card stats-card">
+          <div className="stats-card-head">
+            <h2 className="stats-card-title">Средняя активность</h2>
+          </div>
+          <div className="stats-big-number">{averagePerDay}</div>
+          <p className="secondary-text stats-card-foot">
+            {averagePerDay > 0 ? formatGoalsPerDayLabel(averagePerDay) : 'Нет завершений для расчёта'}
+          </p>
+        </article>
+      </div>
+
+      <div className="stats-main-grid">
+        <article className="card stats-panel stats-panel--wide">
+          <div className="stats-card-head">
+            <h2 className="stats-card-title">Активность по дням</h2>
+          </div>
+          {!hasDailyData ? (
+            <p className="secondary-text stats-empty-text">
+              Когда появятся завершённые цели, здесь сформируется график активности по дням.
+            </p>
+          ) : (
+            <div className="stats-chart-scroll">
+              <div className="stats-chart-frame" style={{ minWidth: `${Math.max(dailyEntries.length * 42, 320)}px` }}>
+                <Bar data={dailyChartData} options={dailyChartOptions} />
+              </div>
+            </div>
+          )}
+        </article>
+
+        <article className="card stats-panel">
+          <div className="stats-card-head">
+            <h2 className="stats-card-title">Категории целей</h2>
+          </div>
+          {!hasCategoryData ? (
+            <p className="secondary-text stats-empty-text">
+              Пока нет целей в выбранном периоде, поэтому круговая диаграмма ещё пустая.
+            </p>
+          ) : (
+            <div className="stats-category-layout">
+              <div className="stats-category-chart">
+                <Doughnut data={categoryChartData} options={categoryChartOptions} />
+              </div>
+              <div className="stats-category-legend">
+                {categoryStats.map(item => (
+                  <div key={item.category} className="stats-category-row">
+                    <span className="stats-category-meta">
+                      <span
+                        className="stats-category-dot"
+                        style={{ backgroundColor: CATEGORY_COLORS[item.category] }}
+                      />
+                      {item.category}
+                    </span>
+                    <strong>{item.percent}%</strong>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </article>
+      </div>
+
+      <div className="stats-bottom-grid">
+        <article className="card stats-panel">
+          <div className="stats-card-head">
+            <h2 className="stats-card-title">Последние выполненные</h2>
+          </div>
+          {recentCompleted.length === 0 ? (
+            <p className="secondary-text stats-empty-text">
+              В выбранном периоде пока нет завершённых целей.
+            </p>
+          ) : (
+            <div className="stats-recent-list">
+              {recentCompleted.map(goal => (
+                <div key={goal.id} className="stats-recent-row">
+                  <div className="stats-recent-main">
+                    <span className="stats-recent-check">✓</span>
+                    <div>
+                      <strong>{goal.title}</strong>
+                      <p className="secondary-text">{goal.category}</p>
+                    </div>
+                  </div>
+                  <span className="stats-recent-date">{formatDashboardDate(goal.completedAt)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {typeof onClearHistory === 'function' && hasAnyGoals && (
+            <button type="button" className="text-button stats-reset-button" onClick={onClearHistory}>
+              Сбросить все данные
+            </button>
+          )}
+        </article>
+
+        <article className="card stats-panel">
+          <div className="stats-card-head">
+            <h2 className="stats-card-title">Выводы и инсайты</h2>
+          </div>
+          <div className="stats-insights-list">
+            {insights.map(text => (
+              <div key={text} className="stats-insight-row">
+                <span className="stats-insight-icon">✦</span>
+                <p>{text}</p>
+              </div>
+            ))}
+          </div>
+        </article>
+      </div>
+    </section>
+  )
 }
 
 export default Analytics
