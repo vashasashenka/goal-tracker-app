@@ -25,6 +25,7 @@ import {
 } from '../utils/statistics'
 
 ChartJS.register(Tooltip, Legend, CategoryScale, LinearScale, BarElement)
+ChartJS.defaults.font.family = "'Inter', system-ui, sans-serif"
 
 const RANGE_OPTIONS = [
   { id: 'week', label: 'Неделя' },
