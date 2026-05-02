@@ -61,14 +61,29 @@ const GENERATION_INPUT_LIMIT = 300
 const AI_SUGGEST_SLOTS = 3
 const CHECKPOINT_GAP_DAYS = [3, 4, 7, 7, 14, 14, 21]
 const GENERATION_EXAMPLES = [
-  'Подготовиться к диплому',
-  'Начать бегать по утрам',
-  'Изучить английский',
-  'Прочитать книгу',
+  { label: 'Подготовиться к диплому', icon: 'study' },
+  { label: 'Начать бегать по утрам', icon: 'energy' },
+  { label: 'Изучить английский', icon: 'target' },
+  { label: 'Прочитать книгу', icon: 'list' },
 ]
 
 function normalizeEmail(email) {
   return String(email || '').trim().toLowerCase()
+}
+
+function renderGenerationExampleIcon(icon) {
+  const props = { size: 16, weight: 'regular', 'aria-hidden': true }
+  switch (icon) {
+    case 'study':
+      return <GraduationCap {...props} />
+    case 'energy':
+      return <Lightning {...props} />
+    case 'target':
+      return <Target {...props} />
+    case 'list':
+    default:
+      return <ListBullets {...props} />
+  }
 }
 
 function isValidEmail(email) {
@@ -544,6 +559,8 @@ function App() {
     readScopedRecentGenerations(initialStorageScope)
   )
   const [isGenerating, setIsGenerating] = useState(false)
+  const [isSavingGeneratedPlan, setIsSavingGeneratedPlan] = useState(false)
+  const [recentGenerationBusyId, setRecentGenerationBusyId] = useState(null)
   const [showGeneratedResult, setShowGeneratedResult] = useState(false)
   const [genCustomInput, setGenCustomInput] = useState('')
   const [genCustomDateDraft, setGenCustomDateDraft] = useState('')
@@ -563,6 +580,7 @@ function App() {
   const [selectedRecommendationId, setSelectedRecommendationId] = useState(null)
   const generatedDateInputRef = useRef(null)
   const generationInputRef = useRef(null)
+  const generationResultRef = useRef(null)
   const agendaTasksRef = useRef(null)
   const recommendationsRef = useRef(null)
   const goalMenuRef = useRef(null)
@@ -602,6 +620,8 @@ function App() {
     setGenerationInput('')
     setGeneratedSteps([])
     setShowGeneratedResult(false)
+    setIsSavingGeneratedPlan(false)
+    setRecentGenerationBusyId(null)
     setGenCustomInput('')
     setGenCustomDateDraft('')
     setIsGenerating(false)
@@ -642,6 +662,15 @@ function App() {
     })
     return () => cancelAnimationFrame(frame)
   }, [activeTab, showGeneratedResult])
+
+  useEffect(() => {
+    if (activeTab !== 'generate') return
+    if (!isGenerating && !showGeneratedResult) return
+    const frame = requestAnimationFrame(() => {
+      generationResultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [activeTab, isGenerating, showGeneratedResult])
 
   useEffect(() => {
     if (highlightedTaskIds.length === 0) return undefined
@@ -1271,14 +1300,23 @@ function App() {
   function openRecentGeneration(item) {
     if (!item) return
     setGenerationInput(String(item.title || ''))
-    setGeneratedSteps([])
-    setShowGeneratedResult(false)
+    setGeneratedSteps(
+      (Array.isArray(item.steps) ? item.steps : [])
+        .map(sanitizeRecentGenerationStep)
+        .filter(Boolean)
+    )
+    setShowGeneratedResult(true)
+    setIsGenerating(false)
+    setIsSavingGeneratedPlan(false)
+    setRecentGenerationBusyId(null)
+    closeGeneratedDateEditor()
     setAiError('')
     setActiveTab('generate')
   }
 
   async function applyRecentGeneration(item) {
     if (!item) return
+    setRecentGenerationBusyId(item.id)
     try {
       setAiError('')
       const result = await saveStepsToGoal(item.title, item.steps, { suggested: true })
@@ -1288,11 +1326,9 @@ function App() {
     } catch (error) {
       console.error('Повторное добавление генерации:', error)
       setAiError('Не удалось добавить шаги из недавней генерации')
+    } finally {
+      setRecentGenerationBusyId(null)
     }
-  }
-
-  function removeRecentGeneration(itemId) {
-    setRecentGenerations(prev => prev.filter(item => item.id !== itemId))
   }
 
   async function refillRecommendationSlotInPlace(removedItemId, savedGoal) {
@@ -1444,6 +1480,8 @@ function App() {
     setIsGenerating(true)
     setAiError('')
     setShowGeneratedResult(false)
+    setGeneratedSteps([])
+    closeGeneratedDateEditor()
 
     try {
       const baseGoal =
@@ -1460,27 +1498,50 @@ function App() {
       }
 
       const planned = planSuggestedMicroGoals(clean, baseGoal)
-      const result = await saveStepsToGoal(text, planned, { suggested: true })
+      rememberGeneration(text, planned)
+      setGeneratedSteps(planned)
+      setShowGeneratedResult(true)
+    } catch (error) {
+      console.error('Ошибка генерации:', error)
+      const m = error?.message
+      setAiError(
+        m && m !== 'failed' && m !== 'empty'
+          ? m
+          : 'Не удалось сгенерировать. Попробуйте позже'
+      )
+      setGeneratedSteps([])
+      setShowGeneratedResult(false)
+    } finally {
+      setIsGenerating(false)
+    }
+  }
+
+  async function addGeneratedResultToPlan() {
+    const goalTitle = generationInput.trim()
+    if (!goalTitle || generatedSteps.length === 0 || isSavingGeneratedPlan) return
+
+    setIsSavingGeneratedPlan(true)
+    setAiError('')
+
+    try {
+      const result = await saveStepsToGoal(goalTitle, generatedSteps, { suggested: true })
       if (!result?.goal) {
         throw new Error('save-failed')
       }
       if (result.addedIds.length === 0) {
         setAiError('Похожие шаги уже есть в этой цели')
       }
-      rememberGeneration(text, planned)
-      setGeneratedSteps(planned)
       setActiveTab('agenda')
     } catch (error) {
-      console.error('Ошибка генерации:', error)
-      const m = error?.message
+      console.error('Добавление результата генерации в план:', error)
+      const message = error?.message
       setAiError(
-        m && m !== 'failed' && m !== 'empty' && m !== 'save-failed'
-          ? m
-          : 'Не удалось сгенерировать. Попробуйте позже'
+        message && message !== 'failed' && message !== 'save-failed'
+          ? message
+          : 'Не удалось добавить шаги в план'
       )
-      setShowGeneratedResult(false)
     } finally {
-      setIsGenerating(false)
+      setIsSavingGeneratedPlan(false)
     }
   }
 
@@ -1559,10 +1620,12 @@ function App() {
   function beginNewGoalGeneration() {
     setShowGeneratedResult(false)
     setGeneratedSteps([])
+    setIsSavingGeneratedPlan(false)
     setGenerationInput('')
     setGenCustomInput('')
     setGenCustomDateDraft('')
     setGenRowBusyId(null)
+    setRecentGenerationBusyId(null)
     closeGeneratedDateEditor()
     setIsAddingOwnStep(false)
     setAiError('')
@@ -2838,268 +2901,155 @@ function App() {
 
       {!showProfile && activeTab === 'generate' && (
         <section className="screen screen--generate">
-          <header className="screen-header">
-            <button type="button" className="text-button text-button--with-icon" onClick={() => setActiveTab('agenda')}>
-              <ArrowLeft size={18} weight="regular" aria-hidden />
-              Назад
-            </button>
-            <div className="screen-header-copy screen-header-copy--generation">
-              <h1 className="screen-title-with-icon">
-                <Sparkle size={18} weight="fill" aria-hidden />
-                <span>{showGeneratedResult ? 'Результат' : 'Генерация'}</span>
-              </h1>
-              <p className="secondary-text generation-screen-copy">
-                {showGeneratedResult
-                  ? 'Вот стартовый план. Добавляйте шаги по одному и сразу ставьте дату.'
-                  : 'Опиши цель — мы разобьём её на шаги.'}
-              </p>
+          <header className="screen-header generation-screen-header">
+            <div className="screen-header-copy">
+              <h1>Генерация</h1>
+              <p className="secondary-text generation-screen-copy">Опишите цель — мы разобьём её на шаги.</p>
             </div>
-            <div />
           </header>
-
-          {!showGeneratedResult && (
-            <>
-              <div className="generation-home-grid">
-                <div className="generation-home-main">
-                  <div className="empty-space" />
-                  <h2 className="center-title generation-main-title">Опиши цель — мы разобьём её на шаги</h2>
-                  <div className="generation-form-card">
-                    <label htmlFor="generation-input" className="generation-label">
-                      Цель
-                    </label>
-                    <textarea
-                      ref={generationInputRef}
-                      id="generation-input"
-                      className="big-input"
-                      maxLength={GENERATION_INPUT_LIMIT}
-                      value={generationInput}
-                      onChange={e => setGenerationInput(e.target.value)}
-                      placeholder="Напишите цель или задачу, которую хотите достичь..."
-                    />
-                    <div className="generation-input-meta">
-                      <span className="secondary-text" />
-                      <span className="secondary-text">
-                        {generationInput.length} / {GENERATION_INPUT_LIMIT}
-                      </span>
-                    </div>
-                    <div className="generation-examples-block">
-                      <span className="generation-label generation-label--muted">Примеры целей</span>
-                      <div className="generation-example-row">
-                        {GENERATION_EXAMPLES.map(example => (
-                          <button
-                            key={example}
-                            type="button"
-                            className="generation-example-chip"
-                            onClick={() => {
-                              setGenerationInput(example)
-                              setShowGeneratedResult(false)
-                            }}
-                          >
-                            {example}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="generation-preview-card" aria-hidden="true">
-                      <div className="generation-preview-head">
-                        <span className="generation-preview-icon" aria-hidden="true">🎯</span>
-                        <span className="generation-label">Пример</span>
-                      </div>
-                      <div className="generation-preview-lines">
-                        <strong>Выучить английский</strong>
-                        <span>1. Выучить 10 новых слов</span>
-                        <span>2. Посмотреть короткое видео</span>
-                        <span>3. Составить диалог из 5 фраз</span>
-                      </div>
-                    </div>
-                  </div>
-                  {(activeGoal || generationInput.trim()) && (
-                    <p className="secondary-text generation-goal-hint">
-                      Шаги добавятся к существующей цели или создадут новую
-                    </p>
-                  )}
-                  <p className="secondary-text generation-inline-note">Генерируем 3 стартовых шага для цели</p>
-                  <button
-                    className="primary-button"
-                    disabled={isGenerating || !generationInput.trim()}
-                    onClick={() => handleGenerate()}
-                  >
-                    {isGenerating ? 'Генерируем шаги…' : 'Получить шаги'}
-                  </button>
-                  {isGenerating ? (
-                    <div className="generation-loading-card" aria-live="polite">
-                      <strong>Генерируем шаги...</strong>
-                      <span>⚡ Анализируем цель</span>
-                      <span>⚡ Подбираем первые шаги</span>
-                    </div>
-                  ) : null}
+          <div className="generation-home-grid">
+            <div className="generation-home-main">
+              <div className="generation-form-card generation-form-card--builder">
+                <label htmlFor="generation-input" className="generation-label generation-label--section">
+                  Опишите цель
+                </label>
+                <textarea
+                  ref={generationInputRef}
+                  id="generation-input"
+                  className="big-input generation-input"
+                  rows={6}
+                  maxLength={GENERATION_INPUT_LIMIT}
+                  value={generationInput}
+                  onChange={event => {
+                    setGenerationInput(event.target.value)
+                    setShowGeneratedResult(false)
+                    setGeneratedSteps([])
+                    setAiError('')
+                  }}
+                  placeholder="Напишите цель…"
+                />
+                <div className="generation-input-meta">
+                  <span className="secondary-text" />
+                  <span className="secondary-text">
+                    {generationInput.length} / {GENERATION_INPUT_LIMIT}
+                  </span>
                 </div>
 
-              {recentGenerations.length > 0 && (
-                <aside className="recent-generations recent-generations--compact">
-                  <div className="section-heading-row">
-                    <h2>Недавние генерации</h2>
+                <div className="generation-examples-block">
+                  <span className="generation-label generation-label--muted">Примеры целей</span>
+                  <div className="generation-example-row">
+                    {GENERATION_EXAMPLES.map(example => (
+                      <button
+                        key={example.label}
+                        type="button"
+                        className="generation-example-chip"
+                        onClick={() => {
+                          setGenerationInput(example.label)
+                          setShowGeneratedResult(false)
+                          setGeneratedSteps([])
+                          setAiError('')
+                        }}
+                      >
+                        {renderGenerationExampleIcon(example.icon)}
+                        <span>{example.label}</span>
+                      </button>
+                    ))}
                   </div>
-                  <div className="recent-generations-list">
-                    {recentGenerations.map(item => (
-                      <article key={item.id} className="recent-generation-card">
+                </div>
+
+                <button
+                  type="button"
+                  className="primary-button generation-submit-button"
+                  disabled={isGenerating || !generationInput.trim()}
+                  onClick={() => handleGenerate()}
+                >
+                  <Sparkle size={18} weight="fill" aria-hidden />
+                  <span>Разбить на шаги</span>
+                </button>
+              </div>
+
+              {isGenerating ? (
+                <section
+                  ref={generationResultRef}
+                  className="generation-result-card generation-result-card--loading"
+                  aria-live="polite"
+                >
+                  <div className="generation-result-head">
+                    <span className="generation-result-badge">Генерация</span>
+                    <h2>Собираем шаги для вашей цели</h2>
+                    <p className="secondary-text">Подбираем понятный стартовый план.</p>
+                  </div>
+                  <div className="skeleton-wrap generation-result-skeleton">
+                    <div className="skeleton-card" />
+                    <div className="skeleton-card" />
+                    <div className="skeleton-card" />
+                  </div>
+                </section>
+              ) : null}
+
+              {!isGenerating && showGeneratedResult && generatedSteps.length > 0 ? (
+                <section ref={generationResultRef} className="generation-result-card fade-in">
+                  <div className="generation-result-head">
+                    <span className="generation-result-badge">Результат</span>
+                    <h2>Цель: {generationInput}</h2>
+                    <p className="secondary-text">Ниже стартовые шаги. Их можно сразу добавить в план.</p>
+                  </div>
+
+                  <ol className="generation-result-list">
+                    {generatedSteps.map((step, index) => (
+                      <li key={step.id} className="generation-result-item">
+                        <span className="generation-result-index">{index + 1}.</span>
+                        <span>{step.text}</span>
+                      </li>
+                    ))}
+                  </ol>
+
+                  <button
+                    type="button"
+                    className="primary-button generation-result-button"
+                    disabled={isSavingGeneratedPlan}
+                    onClick={addGeneratedResultToPlan}
+                  >
+                    {isSavingGeneratedPlan ? 'Добавляем в план…' : 'Добавить в план'}
+                  </button>
+                </section>
+              ) : null}
+            </div>
+
+            {recentGenerations.length > 0 ? (
+              <aside className="recent-generations recent-generations--compact">
+                <div className="section-heading-row">
+                  <h2>Недавние генерации</h2>
+                </div>
+                <div className="recent-generations-list">
+                  {recentGenerations.map(item => (
+                    <article
+                      key={item.id}
+                      className={`recent-generation-card ${showGeneratedResult && generationInput === item.title ? 'recent-generation-card--active' : ''}`}
+                    >
+                      <button type="button" className="recent-generation-open" onClick={() => openRecentGeneration(item)}>
                         <div className="recent-generation-main">
                           <strong>{item.title}</strong>
                           <p className="secondary-text">
                             {item.steps.length} шага · {formatRecentGenerationDate(item.createdAt)}
                           </p>
                         </div>
-                        <div className="recent-generation-actions">
-                          <button
-                            type="button"
-                            className="text-button recent-generation-link"
-                            onClick={() => openRecentGeneration(item)}
-                          >
-                            Открыть
-                          </button>
-                          <button
-                            type="button"
-                            className="text-button recent-generation-link"
-                            onClick={() => applyRecentGeneration(item)}
-                          >
-                            Добавить
-                          </button>
-                          <button
-                            type="button"
-                            className="text-button recent-generation-link recent-generation-link--danger"
-                            onClick={() => removeRecentGeneration(item.id)}
-                          >
-                            Удалить
-                          </button>
-                        </div>
-                      </article>
-                    ))}
-                  </div>
-                </aside>
-              )}
-              </div>
-            </>
-          )}
-
-          {showGeneratedResult && (
-            <div className="fade-in gen-result">
-              <div className="result-goal-header">
-                <p className="secondary-text result-source-line">
-                  Исходная задача: «{generationInput}»
-                </p>
-                <button
-                  type="button"
-                  className="text-button result-new-goal-link"
-                  disabled={isGenerating || isAddingOwnStep}
-                  onClick={beginNewGoalGeneration}
-                >
-                  Новая цель для микрошагов
-                </button>
-              </div>
-
-              <div className="gen-ai-heading">
-                <h2 className="gen-micro-title">Вот план</h2>
-                <p className="secondary-text gen-ai-sub">
-                  Добавляйте шаги по одному и сразу переносите их в план.
-                </p>
-              </div>
-
-              {isGenerating && (
-                <div className="skeleton-wrap">
-                  <div className="skeleton-card" />
-                  <div className="skeleton-card" />
-                  <div className="skeleton-card" />
-                </div>
-              )}
-
-              {!isGenerating && (
-                <ul className="gen-step-list">
-                  {generatedSteps.map((step, index) => (
-                    <li
-                      key={step.id}
-                      className={`gen-step-row ${step.instantEnter ? 'micro-appear-instant' : 'micro-appear'} ${genRowBusyId === step.id ? 'gen-step-row--busy' : ''}`}
-                      style={step.instantEnter ? undefined : { '--appear-i': index }}
-                    >
-                      <span className="gen-step-num">{index + 1}.</span>
-                      <div className="gen-step-main">
-                        <span className="gen-step-text">{step.text}</span>
-                      </div>
-                      <div className="gen-step-actions">
-                        <button
-                          type="button"
-                          className={`gen-step-icon-btn gen-step-calendar-btn ${generatedDateEditor?.mode === 'generated' && generatedDateEditor?.stepId === step.id ? 'gen-step-calendar-btn--active' : ''} ${step.userPickedDate ? 'gen-step-calendar-btn--selected' : ''}`}
-                          aria-label="Выбрать дату"
-                          disabled={isGenerating || isAddingOwnStep || genRowBusyId === step.id}
-                          onClick={() =>
-                            openGeneratedDateEditor('generated', {
-                              stepId: step.id,
-                              value: normalizeIsoDate(step.recommendedDate),
-                            })
-                          }
-                        >
-                          <CalendarBlank size={20} weight="regular" aria-hidden />
-                        </button>
-                        <button
-                          type="button"
-                          className="gen-step-icon-btn gen-step-add-btn"
-                          aria-label="Добавить в план и сгенерировать новый шаг"
-                          disabled={
-                            isGenerating || isAddingOwnStep || genRowBusyId === step.id
-                          }
-                          onClick={() => addGeneratedStepToAgendaAndRefill(step.id)}
-                        >
-                          {genRowBusyId === step.id ? '…' : <Plus size={20} weight="bold" aria-hidden />}
-                        </button>
-                      </div>
-                    </li>
+                      </button>
+                      <button
+                        type="button"
+                        className="recent-generation-add"
+                        aria-label={`Добавить цель «${item.title}» в план`}
+                        disabled={recentGenerationBusyId === item.id}
+                        onClick={() => applyRecentGeneration(item)}
+                      >
+                        {recentGenerationBusyId === item.id ? '…' : <Plus size={18} weight="bold" aria-hidden />}
+                      </button>
+                    </article>
                   ))}
-                </ul>
-              )}
-
-              {!isGenerating && (
-                <div className="gen-own-row">
-                  <input
-                    type="text"
-                    className="gen-own-input"
-                    placeholder="Добавить свой микрошаг…"
-                    value={genCustomInput}
-                    onChange={e => setGenCustomInput(e.target.value)}
-                    onKeyDown={e => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault()
-                        addOwnMicroStepToAgenda()
-                      }
-                    }}
-                    disabled={isAddingOwnStep}
-                  />
-                  <div className="gen-own-actions">
-                    <button
-                      type="button"
-                      className={`gen-step-icon-btn gen-step-calendar-btn ${generatedDateEditor?.mode === 'own' ? 'gen-step-calendar-btn--active' : ''} ${genCustomDateDraft ? 'gen-step-calendar-btn--selected' : ''}`}
-                      aria-label="Выбрать дату для своего шага"
-                      disabled={isAddingOwnStep}
-                      onClick={() =>
-                        openGeneratedDateEditor('own', {
-                          value: genCustomDateDraft,
-                        })
-                      }
-                    >
-                      <CalendarBlank size={20} weight="regular" aria-hidden />
-                    </button>
-                  </div>
-                  <button
-                    type="button"
-                    className="gen-step-icon-btn gen-step-add-btn gen-own-add-btn"
-                    aria-label="Добавить свой шаг в план"
-                    disabled={isAddingOwnStep || !genCustomInput.trim()}
-                    onClick={addOwnMicroStepToAgenda}
-                  >
-                    {isAddingOwnStep ? '…' : <Plus size={20} weight="bold" aria-hidden />}
-                  </button>
                 </div>
-              )}
-            </div>
-          )}
+              </aside>
+            ) : null}
+          </div>
         </section>
       )}
 
