@@ -2258,7 +2258,7 @@ function App() {
           <div className="agenda-layout">
             <div className="agenda-column agenda-column--main">
               <div className="section-heading-row">
-                <h2>{safeGoals.length > 1 ? 'Мои цели' : 'Моя цель'}</h2>
+                <h2>Текущая цель</h2>
                 {safeGoals.length > 1 && activeGoal && (
                   <span className="goal-pill" aria-live="polite">
                     {safeGoals.findIndex(g => g.id === activeGoal.id) + 1} / {safeGoals.length}
@@ -2393,16 +2393,19 @@ function App() {
               )}
 
               <div ref={agendaTasksRef} />
-              <h2 className="section-h2-tight">Шаги</h2>
-              {activeGoal && (
-                <button
-                  type="button"
-                  className="text-button section-inline-action"
-                  onClick={() => openTaskEditor(activeGoal.id)}
-                >
-                  + Добавить свой микрошаг
-                </button>
-              )}
+              <div className="section-heading-row section-heading-row--steps">
+                <h2 className="section-h2-tight">Шаги</h2>
+                {activeGoal && (
+                  <button
+                    type="button"
+                    className="section-add-button"
+                    onClick={() => openTaskEditor(activeGoal.id)}
+                  >
+                    <Plus size={16} weight="bold" aria-hidden />
+                    Добавить шаг
+                  </button>
+                )}
+              </div>
               {!activeGoal || agendaMicroTasks.length === 0 ? (
                 activeGoal ? (
                   <button
@@ -2585,22 +2588,6 @@ function App() {
               )}
             </aside>
           </div>
-
-          <button
-            type="button"
-            className="fab"
-            aria-label={activeGoal ? 'Создать новый микрошаг' : 'Создать новую цель'}
-            onClick={() => {
-              if (activeGoal) {
-                openTaskEditor(activeGoal.id)
-              } else {
-                beginNewGoalGeneration()
-                setActiveTab('generate')
-              }
-            }}
-          >
-            <Plus size={28} weight="bold" aria-hidden />
-          </button>
         </section>
       )}
 
@@ -2630,10 +2617,10 @@ function App() {
               <div className="generation-home-grid">
                 <div className="generation-home-main">
                   <div className="empty-space" />
-                  <h2 className="center-title generation-main-title">Что нужно разбить на шаги?</h2>
+                  <h2 className="center-title generation-main-title">Опиши цель</h2>
                   <div className="generation-form-card">
                     <label htmlFor="generation-input" className="generation-label">
-                      Опишите вашу цель или задачу
+                      Какая у тебя цель?
                     </label>
                     <textarea
                       ref={generationInputRef}
@@ -2680,7 +2667,7 @@ function App() {
                     disabled={isGenerating || !generationInput.trim()}
                     onClick={() => handleGenerate()}
                   >
-                    {isGenerating ? 'Создаём план…' : 'Сгенерировать шаги'}
+                    {isGenerating ? 'Создаём план…' : 'Сгенерировать'}
                   </button>
                 </div>
 
