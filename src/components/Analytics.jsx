@@ -53,9 +53,21 @@ function formatActivityHeading(key) {
   return date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' }).replace(/\s?г\.$/, '')
 }
 
-function formatChartLabel(key) {
-  const date = new Date(`${key}T12:00:00`)
+function formatMonthHeading(key) {
+  const date = new Date(`${key}-01T12:00:00`)
   if (Number.isNaN(date.getTime())) return key
+  return date.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' }).replace(/\s?г\.$/, '')
+}
+
+function formatChartLabel(key, resolution = 'day', includeYear = false) {
+  const date = new Date(resolution === 'month' ? `${key}-01T12:00:00` : `${key}T12:00:00`)
+  if (Number.isNaN(date.getTime())) return key
+
+  if (resolution === 'month') {
+    const month = date.toLocaleDateString('ru-RU', { month: 'short' }).replace(/\./g, '')
+    return includeYear ? `${month} ${String(date.getFullYear()).slice(-2)}` : month
+  }
+
   return date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' }).replace(/\./g, '')
 }
 
@@ -85,6 +97,21 @@ function addDays(dateLike, days) {
   if (!date) return null
   date.setDate(date.getDate() + Number(days || 0))
   return date
+}
+
+function startOfMonth(dateLike) {
+  const date = startOfDay(dateLike)
+  if (!date) return null
+  date.setDate(1)
+  return date
+}
+
+function toMonthKey(value) {
+  const date = value ? new Date(value) : null
+  if (!date || Number.isNaN(date.getTime())) return ''
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  return `${y}-${m}`
 }
 
 function toLocalDateKey(value) {
@@ -148,6 +175,22 @@ function getRangeDates(bounds, limit = 500) {
   return dates
 }
 
+function getRangeMonths(bounds, limit = 240) {
+  if (!bounds?.start || !bounds?.end) return []
+  const months = []
+  const end = startOfMonth(bounds.end)
+  let cursor = startOfMonth(bounds.start)
+  let guard = 0
+
+  while (cursor && end && cursor.getTime() <= end.getTime() && guard < limit) {
+    months.push(toMonthKey(cursor))
+    cursor.setMonth(cursor.getMonth() + 1)
+    guard += 1
+  }
+
+  return months
+}
+
 function buildLastWeekStrip(now, completionKeys) {
   const end = startOfDay(now)
   if (!end) return []
@@ -168,7 +211,11 @@ function buildLastWeekStrip(now, completionKeys) {
   return out
 }
 
-function buildDailyActivityMap(goals, bounds) {
+function getActivityResolution(range) {
+  return range === 'year' || range === 'all' ? 'month' : 'day'
+}
+
+function buildActivityMap(goals, bounds, resolution) {
   const map = Object.create(null)
   const from = bounds?.start ? toLocalDateKey(bounds.start) : ''
   const to = bounds?.end ? toLocalDateKey(bounds.end) : ''
@@ -180,21 +227,30 @@ function buildDailyActivityMap(goals, bounds) {
       if (!dateKey) continue
       if (from && to && (dateKey < from || dateKey > to)) continue
 
-      if (!map[dateKey]) {
-        map[dateKey] = { count: 0, details: [] }
+      const bucketKey = resolution === 'month' ? dateKey.slice(0, 7) : dateKey
+      if (!map[bucketKey]) {
+        map[bucketKey] = { count: 0, details: [] }
       }
 
       const exactTime = String(step.completedAt || '').trim()
       const timeSort = exactTime
         ? new Date(exactTime).getTime()
         : new Date(`${dateKey}T23:59:59`).getTime()
+      const timeLabel =
+        resolution === 'month'
+          ? exactTime
+            ? `${formatDashboardDate(`${dateKey}T12:00:00`)} · ${formatTimeLabel(exactTime)}`
+            : formatDashboardDate(`${dateKey}T12:00:00`)
+          : exactTime
+            ? formatTimeLabel(exactTime)
+            : 'Без времени'
 
-      map[dateKey].count += 1
-      map[dateKey].details.push({
+      map[bucketKey].count += 1
+      map[bucketKey].details.push({
         id: `${goal.id}-${step.id}-${dateKey}`,
         title: step.title,
         goalTitle: goal.title,
-        timeLabel: exactTime ? formatTimeLabel(exactTime) : 'Без времени',
+        timeLabel,
         timeSort,
       })
     }
@@ -205,7 +261,8 @@ function buildDailyActivityMap(goals, bounds) {
 
 function Analytics({ goals, completedGoals, onClearHistory }) {
   const [range, setRange] = useState('month')
-  const [selectedActivityDate, setSelectedActivityDate] = useState('')
+  const [activeActivityKey, setActiveActivityKey] = useState('')
+  const [isCoarsePointer, setIsCoarsePointer] = useState(false)
 
   const statGoals = useMemo(
     () => [
@@ -218,6 +275,7 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
   const filteredGoals = useMemo(() => filterGoals(statGoals, range), [statGoals, range])
   const rangeBounds = useMemo(() => getRangeBounds(range, statGoals), [range, statGoals])
   const rangeCaption = useMemo(() => getRangeCaption(range, rangeBounds), [range, rangeBounds])
+  const activityResolution = useMemo(() => getActivityResolution(range), [range])
 
   const microProgress = useMemo(
     () => getMicroProgressForScopedGoals(statGoals, rangeBounds),
@@ -242,37 +300,42 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
     [completionKeysForStrip]
   )
 
-  const dailyActivityMap = useMemo(
-    () => buildDailyActivityMap(statGoals, rangeBounds),
-    [rangeBounds, statGoals]
+  const activityMap = useMemo(
+    () => buildActivityMap(statGoals, rangeBounds, activityResolution),
+    [activityResolution, rangeBounds, statGoals]
   )
 
-  const dailyEntries = useMemo(() => {
-    const keys = getRangeDates(rangeBounds)
+  const includeYearInActivityLabels = useMemo(() => {
+    if (activityResolution !== 'month' || !rangeBounds?.start || !rangeBounds?.end) return false
+    return rangeBounds.start.getFullYear() !== rangeBounds.end.getFullYear()
+  }, [activityResolution, rangeBounds])
+
+  const activityEntries = useMemo(() => {
+    const keys = activityResolution === 'month' ? getRangeMonths(rangeBounds) : getRangeDates(rangeBounds)
     if (keys.length > 0) {
-      return keys.map(date => ({
-        date,
-        count: Number(dailyActivityMap[date]?.count || 0),
-        details: dailyActivityMap[date]?.details || [],
-        label: formatChartLabel(date),
-        heading: formatActivityHeading(date),
+      return keys.map(key => ({
+        key,
+        count: Number(activityMap[key]?.count || 0),
+        details: activityMap[key]?.details || [],
+        label: formatChartLabel(key, activityResolution, includeYearInActivityLabels),
+        heading: activityResolution === 'month' ? formatMonthHeading(key) : formatActivityHeading(key),
       }))
     }
 
-    return Object.keys(dailyActivityMap)
+    return Object.keys(activityMap)
       .sort()
-      .map(date => ({
-        date,
-        count: dailyActivityMap[date].count,
-        details: dailyActivityMap[date].details,
-        label: formatChartLabel(date),
-        heading: formatActivityHeading(date),
+      .map(key => ({
+        key,
+        count: activityMap[key].count,
+        details: activityMap[key].details,
+        label: formatChartLabel(key, activityResolution, includeYearInActivityLabels),
+        heading: activityResolution === 'month' ? formatMonthHeading(key) : formatActivityHeading(key),
       }))
-  }, [dailyActivityMap, rangeBounds])
+  }, [activityMap, activityResolution, includeYearInActivityLabels, rangeBounds])
 
   const maxMicroDay = useMemo(
-    () => dailyEntries.reduce((max, item) => Math.max(max, item.count), 0),
-    [dailyEntries]
+    () => activityEntries.reduce((max, item) => Math.max(max, item.count), 0),
+    [activityEntries]
   )
 
   const avgMicro = useMemo(
@@ -299,33 +362,39 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
   )
 
   useEffect(() => {
-    if (dailyEntries.length === 0) {
-      if (selectedActivityDate) setSelectedActivityDate('')
-      return
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return undefined
+
+    const media = window.matchMedia('(hover: none), (pointer: coarse)')
+    const sync = () => setIsCoarsePointer(media.matches)
+
+    sync()
+    if (typeof media.addEventListener === 'function') {
+      media.addEventListener('change', sync)
+      return () => media.removeEventListener('change', sync)
     }
 
-    const hasSelected = dailyEntries.some(item => item.date === selectedActivityDate)
-    if (hasSelected) return
+    media.addListener(sync)
+    return () => media.removeListener(sync)
+  }, [])
 
-    const preferred = [...dailyEntries].reverse().find(item => item.count > 0) || dailyEntries[dailyEntries.length - 1]
-    if (preferred?.date) setSelectedActivityDate(preferred.date)
-  }, [dailyEntries, selectedActivityDate])
+  useEffect(() => {
+    if (!activeActivityKey) return
+    const hasActive = activityEntries.some(item => item.key === activeActivityKey)
+    if (!hasActive) setActiveActivityKey('')
+  }, [activityEntries, activeActivityKey])
 
-  const selectedActivityEntry = useMemo(
-    () =>
-      dailyEntries.find(item => item.date === selectedActivityDate) ||
-      dailyEntries[dailyEntries.length - 1] ||
-      null,
-    [dailyEntries, selectedActivityDate]
+  const activeActivityEntry = useMemo(
+    () => activityEntries.find(item => item.key === activeActivityKey) || null,
+    [activityEntries, activeActivityKey]
   )
 
-  const selectedActivityDetails = useMemo(
+  const activeActivityDetails = useMemo(
     () =>
-      [...(selectedActivityEntry?.details || [])].sort((a, b) => {
+      [...(activeActivityEntry?.details || [])].sort((a, b) => {
         if (a.timeSort !== b.timeSort) return a.timeSort - b.timeSort
         return String(a.title || '').localeCompare(String(b.title || ''), 'ru')
       }),
-    [selectedActivityEntry]
+    [activeActivityEntry]
   )
 
   const activityScale = useMemo(() => {
@@ -339,11 +408,14 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
     : 0
   const latestCompletedTotal = latestCompletedGoal?.steps?.length || 0
 
-  const hasDailyData = dailyEntries.some(item => item.count > 0)
+  const hasDailyData = activityEntries.some(item => item.count > 0)
   const hasAnyGoals = statGoals.length > 0
   const daysInRange = countDaysInclusive(rangeBounds)
   const avgLabel = daysInRange > 0 ? `${avgMicro.toFixed(1).replace('.', ',')} за день` : '—'
-  const rangeLabel = RANGE_OPTIONS.find(option => option.id === range)?.label || 'Все дни'
+  const activityModeLabel = activityResolution === 'month' ? 'По месяцам' : 'По дням'
+  const activityHoverHint = isCoarsePointer
+    ? 'Нажмите на столбец, чтобы увидеть завершённые шаги.'
+    : 'Наведите на столбец, чтобы увидеть завершённые шаги.'
 
   return (
     <section className="screen screen--journal journal-screen stats-screen">
@@ -454,7 +526,12 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
           </p>
         ) : (
           <div className="stats-activity-layout">
-            <div className="stats-activity-chart">
+            <div
+              className="stats-activity-chart"
+              onMouseLeave={() => {
+                if (!isCoarsePointer) setActiveActivityKey('')
+              }}
+            >
               <div className="stats-activity-plot">
                 <div className="stats-activity-axis" aria-hidden="true">
                   {activityScale.map(value => (
@@ -474,17 +551,32 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
                       />
                     ))}
 
-                  <div className="stats-activity-bars">
-                    {dailyEntries.map(item => {
-                      const selected = item.date === selectedActivityEntry?.date
+                  <div
+                    className={`stats-activity-bars ${activityResolution === 'month' ? 'stats-activity-bars--month' : ''}`}
+                  >
+                    {activityEntries.map(item => {
+                      const selected = item.key === activeActivityEntry?.key
                       const height = item.count > 0 ? `${(item.count / activityScale[0]) * 100}%` : '16px'
 
                       return (
                         <button
-                          key={item.date}
+                          key={item.key}
                           type="button"
-                          className={`stats-activity-day ${selected ? 'stats-activity-day--selected' : ''}`}
-                          onClick={() => setSelectedActivityDate(item.date)}
+                          className={`stats-activity-day ${selected ? 'stats-activity-day--selected' : ''} ${activityResolution === 'month' ? 'stats-activity-day--month' : ''}`}
+                          onMouseEnter={() => {
+                            if (!isCoarsePointer) setActiveActivityKey(item.key)
+                          }}
+                          onFocus={() => setActiveActivityKey(item.key)}
+                          onBlur={event => {
+                            if (!event.currentTarget.parentElement?.contains(event.relatedTarget)) {
+                              setActiveActivityKey('')
+                            }
+                          }}
+                          onClick={() => {
+                            if (!isCoarsePointer) return
+                            setActiveActivityKey(current => (current === item.key ? '' : item.key))
+                          }}
+                          aria-pressed={selected}
                         >
                           <div className="stats-activity-bar-wrap">
                             {selected && item.count > 0 && (
@@ -503,39 +595,43 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
                   </div>
                 </div>
               </div>
-            </div>
 
-            <aside className="stats-activity-detail">
-              <div className="stats-activity-detail-head">
-                <h3>
-                  {selectedActivityEntry
-                    ? `${selectedActivityEntry.heading} · ${formatStepCount(selectedActivityEntry.count)}`
-                    : 'Нет активности'}
-                </h3>
-                <span className="stats-detail-pill">{rangeLabel}</span>
-              </div>
-
-              {selectedActivityDetails.length === 0 ? (
-                <p className="secondary-text stats-empty-text">
-                  За выбранный день пока нет завершённых шагов.
-                </p>
-              ) : (
-                <div className="stats-activity-detail-list">
-                  {selectedActivityDetails.map(item => (
-                    <div key={item.id} className="stats-activity-detail-row">
-                      <span className="stats-activity-detail-check" aria-hidden="true">
-                        ✓
-                      </span>
-                      <div className="stats-activity-detail-main">
-                        <strong>{item.title}</strong>
-                        <span className="stats-activity-detail-meta">{item.goalTitle}</span>
-                      </div>
-                      <span className="stats-activity-detail-time">{item.timeLabel}</span>
-                    </div>
-                  ))}
-                </div>
+              {!activeActivityEntry && (
+                <p className="secondary-text stats-activity-hover-hint">{activityHoverHint}</p>
               )}
-            </aside>
+
+              {activeActivityEntry && (
+                <aside className="stats-activity-detail stats-activity-detail--overlay">
+                  <div className="stats-activity-detail-head">
+                    <h3>{`${activeActivityEntry.heading} · ${formatStepCount(activeActivityEntry.count)}`}</h3>
+                    <span className="stats-detail-pill">{activityModeLabel}</span>
+                  </div>
+
+                  {activeActivityDetails.length === 0 ? (
+                    <p className="secondary-text stats-empty-text">
+                      {activityResolution === 'month'
+                        ? 'За выбранный месяц пока нет завершённых шагов.'
+                        : 'За выбранный день пока нет завершённых шагов.'}
+                    </p>
+                  ) : (
+                    <div className="stats-activity-detail-list">
+                      {activeActivityDetails.map(item => (
+                        <div key={item.id} className="stats-activity-detail-row">
+                          <span className="stats-activity-detail-check" aria-hidden="true">
+                            ✓
+                          </span>
+                          <div className="stats-activity-detail-main">
+                            <strong>{item.title}</strong>
+                            <span className="stats-activity-detail-meta">{item.goalTitle}</span>
+                          </div>
+                          <span className="stats-activity-detail-time">{item.timeLabel}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </aside>
+              )}
+            </div>
           </div>
         )}
       </article>
