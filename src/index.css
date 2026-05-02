@@ -1631,6 +1631,10 @@ small,
   gap: 24px;
 }
 
+.generation-home-grid--single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .generation-home-main {
   display: grid;
   gap: 20px;
@@ -3756,6 +3760,10 @@ small,
     grid-template-columns: minmax(0, 1.6fr) minmax(250px, 0.7fr);
     gap: 22px;
     align-items: start;
+  }
+
+  .generation-home-grid--single {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .generation-input {

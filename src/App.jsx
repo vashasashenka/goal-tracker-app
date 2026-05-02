@@ -60,30 +60,9 @@ const GENERATION_INPUT_LIMIT = 300
 /** Сколько подсказок ИИ держим на экране (после добавления одной — дозаполняем до этого числа). */
 const AI_SUGGEST_SLOTS = 3
 const CHECKPOINT_GAP_DAYS = [3, 4, 7, 7, 14, 14, 21]
-const GENERATION_EXAMPLES = [
-  { label: 'Подготовиться к диплому', icon: 'study' },
-  { label: 'Начать бегать по утрам', icon: 'energy' },
-  { label: 'Изучить английский', icon: 'target' },
-  { label: 'Прочитать книгу', icon: 'list' },
-]
 
 function normalizeEmail(email) {
   return String(email || '').trim().toLowerCase()
-}
-
-function renderGenerationExampleIcon(icon) {
-  const props = { size: 16, weight: 'regular', 'aria-hidden': true }
-  switch (icon) {
-    case 'study':
-      return <GraduationCap {...props} />
-    case 'energy':
-      return <Lightning {...props} />
-    case 'target':
-      return <Target {...props} />
-    case 'list':
-    default:
-      return <ListBullets {...props} />
-  }
 }
 
 function isValidEmail(email) {
@@ -560,7 +539,6 @@ function App() {
   )
   const [isGenerating, setIsGenerating] = useState(false)
   const [isSavingGeneratedPlan, setIsSavingGeneratedPlan] = useState(false)
-  const [recentGenerationBusyId, setRecentGenerationBusyId] = useState(null)
   const [showGeneratedResult, setShowGeneratedResult] = useState(false)
   const [genCustomInput, setGenCustomInput] = useState('')
   const [genCustomDateDraft, setGenCustomDateDraft] = useState('')
@@ -621,7 +599,6 @@ function App() {
     setGeneratedSteps([])
     setShowGeneratedResult(false)
     setIsSavingGeneratedPlan(false)
-    setRecentGenerationBusyId(null)
     setGenCustomInput('')
     setGenCustomDateDraft('')
     setIsGenerating(false)
@@ -1297,40 +1274,6 @@ function App() {
     return { goal: normalizedGoal, addedIds }
   }
 
-  function openRecentGeneration(item) {
-    if (!item) return
-    setGenerationInput(String(item.title || ''))
-    setGeneratedSteps(
-      (Array.isArray(item.steps) ? item.steps : [])
-        .map(sanitizeRecentGenerationStep)
-        .filter(Boolean)
-    )
-    setShowGeneratedResult(true)
-    setIsGenerating(false)
-    setIsSavingGeneratedPlan(false)
-    setRecentGenerationBusyId(null)
-    closeGeneratedDateEditor()
-    setAiError('')
-    setActiveTab('generate')
-  }
-
-  async function applyRecentGeneration(item) {
-    if (!item) return
-    setRecentGenerationBusyId(item.id)
-    try {
-      setAiError('')
-      const result = await saveStepsToGoal(item.title, item.steps, { suggested: true })
-      if (!result?.goal) return
-      setGenerationInput(String(item.title || ''))
-      setActiveTab('agenda')
-    } catch (error) {
-      console.error('Повторное добавление генерации:', error)
-      setAiError('Не удалось добавить шаги из недавней генерации')
-    } finally {
-      setRecentGenerationBusyId(null)
-    }
-  }
-
   async function refillRecommendationSlotInPlace(removedItemId, savedGoal) {
     const titleText = String(savedGoal?.text || '').trim()
     if (!titleText) return
@@ -1625,7 +1568,6 @@ function App() {
     setGenCustomInput('')
     setGenCustomDateDraft('')
     setGenRowBusyId(null)
-    setRecentGenerationBusyId(null)
     closeGeneratedDateEditor()
     setIsAddingOwnStep(false)
     setAiError('')
@@ -2904,10 +2846,12 @@ function App() {
           <header className="screen-header generation-screen-header">
             <div className="screen-header-copy">
               <h1>Генерация</h1>
-              <p className="secondary-text generation-screen-copy">Опишите цель — мы разобьём её на шаги.</p>
+              <p className="secondary-text generation-screen-copy">
+                Опишите цель — система предложит набор микрошагов для её достижения
+              </p>
             </div>
           </header>
-          <div className="generation-home-grid">
+          <div className="generation-home-grid generation-home-grid--single">
             <div className="generation-home-main">
               <div className="generation-form-card generation-form-card--builder">
                 <label htmlFor="generation-input" className="generation-label generation-label--section">
@@ -2926,35 +2870,13 @@ function App() {
                     setGeneratedSteps([])
                     setAiError('')
                   }}
-                  placeholder="Напишите цель…"
+                  placeholder="Например: Изучить английский язык для общения"
                 />
                 <div className="generation-input-meta">
                   <span className="secondary-text" />
                   <span className="secondary-text">
                     {generationInput.length} / {GENERATION_INPUT_LIMIT}
                   </span>
-                </div>
-
-                <div className="generation-examples-block">
-                  <span className="generation-label generation-label--muted">Примеры целей</span>
-                  <div className="generation-example-row">
-                    {GENERATION_EXAMPLES.map(example => (
-                      <button
-                        key={example.label}
-                        type="button"
-                        className="generation-example-chip"
-                        onClick={() => {
-                          setGenerationInput(example.label)
-                          setShowGeneratedResult(false)
-                          setGeneratedSteps([])
-                          setAiError('')
-                        }}
-                      >
-                        {renderGenerationExampleIcon(example.icon)}
-                        <span>{example.label}</span>
-                      </button>
-                    ))}
-                  </div>
                 </div>
 
                 <button
@@ -3015,40 +2937,6 @@ function App() {
                 </section>
               ) : null}
             </div>
-
-            {recentGenerations.length > 0 ? (
-              <aside className="recent-generations recent-generations--compact">
-                <div className="section-heading-row">
-                  <h2>Недавние генерации</h2>
-                </div>
-                <div className="recent-generations-list">
-                  {recentGenerations.map(item => (
-                    <article
-                      key={item.id}
-                      className={`recent-generation-card ${showGeneratedResult && generationInput === item.title ? 'recent-generation-card--active' : ''}`}
-                    >
-                      <button type="button" className="recent-generation-open" onClick={() => openRecentGeneration(item)}>
-                        <div className="recent-generation-main">
-                          <strong>{item.title}</strong>
-                          <p className="secondary-text">
-                            {item.steps.length} шага · {formatRecentGenerationDate(item.createdAt)}
-                          </p>
-                        </div>
-                      </button>
-                      <button
-                        type="button"
-                        className="recent-generation-add"
-                        aria-label={`Добавить цель «${item.title}» в план`}
-                        disabled={recentGenerationBusyId === item.id}
-                        onClick={() => applyRecentGeneration(item)}
-                      >
-                        {recentGenerationBusyId === item.id ? '…' : <Plus size={18} weight="bold" aria-hidden />}
-                      </button>
-                    </article>
-                  ))}
-                </div>
-              </aside>
-            ) : null}
           </div>
         </section>
       )}
