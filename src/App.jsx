@@ -1,24 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeft,
-  Bell,
   Briefcase,
   CalendarBlank,
   CaretDown,
   CaretRight,
   ChartBar,
-  Database,
   Gear,
   GraduationCap,
   Leaf,
   Lightning,
   ListBullets,
-  Lock,
   Plus,
-  SignOut,
   Sparkle,
   Target,
-  User,
   X,
 } from '@phosphor-icons/react'
 import Analytics from './components/Analytics'
@@ -542,9 +537,6 @@ function App() {
   const [authChecked, setAuthChecked] = useState(() => !initialAuthToken)
   const [authError, setAuthError] = useState('')
   const [authInfo, setAuthInfo] = useState('')
-  const [profileBusy, setProfileBusy] = useState(false)
-  const [profileError, setProfileError] = useState('')
-  const [profileInfo, setProfileInfo] = useState('')
 
   const [generationInput, setGenerationInput] = useState('')
   const [generatedSteps, setGeneratedSteps] = useState([])
@@ -568,19 +560,12 @@ function App() {
   const [recommendationsCache, setRecommendationsCache] = useState({})
   const [highlightedTaskIds, setHighlightedTaskIds] = useState([])
   const [showGoalMenu, setShowGoalMenu] = useState(false)
-  const [showNotifications, setShowNotifications] = useState(false)
-  const [showUserMenu, setShowUserMenu] = useState(false)
   const [selectedRecommendationId, setSelectedRecommendationId] = useState(null)
-  const [profileMenuTarget, setProfileMenuTarget] = useState(null)
   const generatedDateInputRef = useRef(null)
   const generationInputRef = useRef(null)
   const agendaTasksRef = useRef(null)
   const recommendationsRef = useRef(null)
   const goalMenuRef = useRef(null)
-  const notificationsRef = useRef(null)
-  const userMenuRef = useRef(null)
-  const profileSectionRef = useRef(null)
-  const settingsSectionRef = useRef(null)
 
   const normalizedUserEmail = normalizeEmail(userEmail)
   const sessionToken = String(authToken || '').trim()
@@ -603,11 +588,6 @@ function App() {
     isValidResetCode(resetCodeDraft) &&
     String(resetNewPasswordDraft || '').length >= 8 &&
     resetNewPasswordDraft === resetNewPasswordRepeatDraft
-  const trimmedNameDraft = String(nameDraft || '').trim()
-  const canSaveProfile =
-    Boolean(trimmedNameDraft) &&
-    trimmedNameDraft !== String(userName || '').trim() &&
-    !profileBusy
   const activeGoalStorageKey = useMemo(
     () => makeScopedStorageKey(ACTIVE_GOAL_KEY, storageScope),
     [storageScope]
@@ -617,7 +597,6 @@ function App() {
     () => makeScopedStorageKey(COMPLETED_GOALS_KEY, storageScope),
     [storageScope]
   )
-  const hasResettableData = goals.length > 0 || completedGoals.length > 0 || recentGenerations.length > 0
 
   function resetGenerationUi() {
     setGenerationInput('')
@@ -726,8 +705,6 @@ function App() {
         setUserEmail(nextEmail)
         setNameDraft(nextName)
         setEmailDraft(nextEmail)
-        setProfileError('')
-        setProfileInfo('')
         setAuthError('')
         setAuthInfo('')
       } catch (error) {
@@ -741,8 +718,6 @@ function App() {
         setUserEmail('')
         setNameDraft('')
         setEmailDraft('')
-        setProfileError('')
-        setProfileInfo('')
         setAuthError('Сессия истекла. Войдите снова.')
         setAuthInfo('')
       } finally {
@@ -925,73 +900,16 @@ function App() {
     return agendaRecommendations.find(item => item.id === selectedRecommendationId) || null
   }, [agendaRecommendations, selectedRecommendationId])
 
-  const agendaNotifications = useMemo(() => {
-    if (!activeGoal) return []
-
-    const todayKey = toIsoDate(new Date())
-    const overdueItems = agendaMicroTasks
-      .filter(task => getAgendaTaskTone(task, todayKey) === 'overdue')
-      .slice(0, 3)
-      .map(task => ({
-        id: `overdue-${task.id}`,
-        type: 'task',
-        tone: 'overdue',
-        title: 'Просроченный шаг',
-        text: task.text,
-        taskId: task.id,
-      }))
-
-    const todayItems = agendaMicroTasks
-      .filter(task => getAgendaTaskTone(task, todayKey) === 'today')
-      .slice(0, 3)
-      .map(task => ({
-        id: `today-${task.id}`,
-        type: 'task',
-        tone: 'today',
-        title: 'Шаг на сегодня',
-        text: task.text,
-        taskId: task.id,
-      }))
-
-    const suggestionItems =
-      agendaRecommendations.length > 0
-        ? [
-            {
-              id: `recommendations-${activeGoal.id}`,
-              type: 'recommendation',
-              tone: 'planned',
-              title: 'Есть новые рекомендации',
-              text: `Для цели «${activeGoal.text}» есть ${agendaRecommendations.length} новых шагов`,
-            },
-          ]
-        : []
-
-    return [...overdueItems, ...todayItems, ...suggestionItems]
-  }, [activeGoal, agendaMicroTasks, agendaRecommendations])
-
-  const userInitial = String(userName || userEmail || 'П')
-    .trim()
-    .charAt(0)
-    .toUpperCase()
-
   useEffect(() => {
     function handlePointerDown(event) {
       if (showGoalMenu && goalMenuRef.current && !goalMenuRef.current.contains(event.target)) {
         setShowGoalMenu(false)
-      }
-      if (showNotifications && notificationsRef.current && !notificationsRef.current.contains(event.target)) {
-        setShowNotifications(false)
-      }
-      if (showUserMenu && userMenuRef.current && !userMenuRef.current.contains(event.target)) {
-        setShowUserMenu(false)
       }
     }
 
     function handleEscape(event) {
       if (event.key === 'Escape') {
         setShowGoalMenu(false)
-        setShowNotifications(false)
-        setShowUserMenu(false)
         setSelectedRecommendationId(null)
       }
     }
@@ -1002,12 +920,10 @@ function App() {
       document.removeEventListener('mousedown', handlePointerDown)
       document.removeEventListener('keydown', handleEscape)
     }
-  }, [showGoalMenu, showNotifications, showUserMenu])
+  }, [showGoalMenu])
 
   useEffect(() => {
     setShowGoalMenu(false)
-    setShowNotifications(false)
-    setShowUserMenu(false)
     setSelectedRecommendationId(null)
   }, [activeTab, showProfile, activeGoalId])
 
@@ -1018,46 +934,20 @@ function App() {
     }
   }, [selectedRecommendationId, selectedRecommendation])
 
-  useEffect(() => {
-    if (!showProfile || !profileMenuTarget) return
-
-    const frame = requestAnimationFrame(() => {
-      if (profileMenuTarget === 'profile') {
-        profileSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-      } else if (profileMenuTarget === 'settings') {
-        settingsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-      }
-      setProfileMenuTarget(null)
-    })
-
-    return () => cancelAnimationFrame(frame)
-  }, [showProfile, profileMenuTarget])
-
   function setCurrentGoal(goalId) {
     setActiveGoalId(goalId)
     localStorage.setItem(activeGoalStorageKey, String(goalId))
     setRecommendations([])
     setShowGoalMenu(false)
-    setShowUserMenu(false)
     setSelectedRecommendationId(null)
   }
 
   function openNewGoalFlow() {
     beginNewGoalGeneration()
     setShowGoalMenu(false)
-    setShowNotifications(false)
-    setShowUserMenu(false)
     setSelectedRecommendationId(null)
     setActiveTab('generate')
     setShowProfile(false)
-  }
-
-  function openProfileScreen(target = 'profile') {
-    setShowUserMenu(false)
-    setShowNotifications(false)
-    setShowGoalMenu(false)
-    setProfileMenuTarget(target)
-    setShowProfile(true)
   }
 
   function replaceGoalInState(nextGoal) {
@@ -1087,22 +977,6 @@ function App() {
     const uniqueIds = [...new Set((Array.isArray(taskIds) ? taskIds : []).filter(Boolean))]
     if (uniqueIds.length === 0) return
     setHighlightedTaskIds(uniqueIds)
-  }
-
-  function handleNotificationSelect(item) {
-    if (!item) return
-    if (item.type === 'recommendation') {
-      recommendationsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    } else if (item.taskId) {
-      highlightAgendaTasks([item.taskId])
-      agendaTasksRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    }
-    setShowNotifications(false)
-  }
-
-  async function handleMenuLogout() {
-    setShowUserMenu(false)
-    await logoutUser()
   }
 
   const utilization = useMemo(() => {
@@ -1143,8 +1017,6 @@ function App() {
       inferRecommendedDate(checkpointOrder, goal?.microGoals || [])
 
     setShowGoalMenu(false)
-    setShowNotifications(false)
-    setShowUserMenu(false)
     setTaskEditor({
       goalId,
       taskId: task?.id ?? null,
@@ -2007,8 +1879,6 @@ function App() {
     setUserEmail(nextEmail)
     setNameDraft(nextName)
     setEmailDraft(nextEmail)
-    setProfileError('')
-    setProfileInfo('')
     setPasswordDraft('')
     setPasswordRepeatDraft('')
     setAuthMode('login')
@@ -2147,9 +2017,6 @@ function App() {
     setNameDraft('')
     resetRecoveryFlow({ keepEmail: Boolean(nextEmail) })
     setEmailDraft(nextEmail)
-    setProfileBusy(false)
-    setProfileError('')
-    setProfileInfo('')
     setPasswordDraft('')
     setPasswordRepeatDraft('')
     setResetStage(nextResetStage)
@@ -2223,35 +2090,6 @@ function App() {
       setAiError(error?.message || 'Не удалось открыть восстановление пароля')
     } finally {
       setAuthBusy(false)
-    }
-  }
-
-  async function saveProfileSettings() {
-    const nextName = String(nameDraft || '').trim()
-    if (!sessionToken || !nextName || nextName === String(userName || '').trim()) return
-
-    setProfileBusy(true)
-    setProfileError('')
-    setProfileInfo('')
-
-    try {
-      const payload = await apiRequest('/api/auth/profile', {
-        method: 'PATCH',
-        sessionToken,
-        body: {
-          name: nextName,
-        },
-      })
-
-      const savedName = String(payload?.user?.name || nextName).trim()
-      setUserName(savedName)
-      setNameDraft(savedName)
-      setProfileInfo('Имя сохранено')
-    } catch (error) {
-      console.error('Сохранение профиля:', error)
-      setProfileError(error?.message || 'Не удалось сохранить имя')
-    } finally {
-      setProfileBusy(false)
     }
   }
 
@@ -2626,17 +2464,6 @@ function App() {
               <Gear size={20} weight={showProfile ? 'fill' : 'regular'} aria-hidden />
               <span>Настройки</span>
             </button>
-
-            <button type="button" className="sidebar-user-card" onClick={() => setShowProfile(true)}>
-              <span className="sidebar-user-avatar" aria-hidden="true">
-                {userInitial || 'П'}
-              </span>
-              <span className="sidebar-user-meta">
-                <strong>{userName || 'Профиль'}</strong>
-                <span>{userEmail || 'Без почты'}</span>
-              </span>
-              <CaretDown size={16} weight="bold" aria-hidden />
-            </button>
           </div>
         </aside>
 
@@ -2656,131 +2483,23 @@ function App() {
             <div className="agenda-header-actions">
               <button
                 type="button"
-                className="agenda-create-goal-button agenda-create-goal-button--desktop"
+                className="agenda-create-goal-button"
                 onClick={openNewGoalFlow}
                 aria-label="Новая цель"
               >
                 <Plus size={18} weight="bold" aria-hidden />
                 <span className="agenda-create-goal-button-label">Новая цель</span>
               </button>
-
-              <div className="notification-shell notification-shell--desktop" ref={notificationsRef}>
-                <button
-                  type="button"
-                  className="icon-button notification-button"
-                  onClick={() => {
-                    setShowNotifications(prev => !prev)
-                    setShowGoalMenu(false)
-                    setShowUserMenu(false)
-                  }}
-                  aria-label="Уведомления"
-                >
-                  <Bell size={20} weight="regular" aria-hidden />
-                  {agendaNotifications.length > 0 ? (
-                    <span className="notification-badge" aria-hidden="true">
-                      {Math.min(agendaNotifications.length, 9)}
-                    </span>
-                  ) : null}
-                </button>
-
-                {showNotifications && (
-                  <div className="notification-panel" role="dialog" aria-label="Уведомления">
-                    <div className="notification-panel-head">
-                      <strong>Уведомления</strong>
-                      <span className="secondary-text">{agendaNotifications.length || 0}</span>
-                    </div>
-
-                    {agendaNotifications.length === 0 ? (
-                      <p className="secondary-text notification-empty">
-                        Пока всё спокойно: просроченных шагов и новых напоминаний нет.
-                      </p>
-                    ) : (
-                      <div className="notification-list">
-                        {agendaNotifications.map(item => (
-                          <button
-                            key={item.id}
-                            type="button"
-                            className={`notification-item notification-item--${item.tone}`}
-                            onClick={() => handleNotificationSelect(item)}
-                          >
-                            <span className="notification-item-title">{item.title}</span>
-                            <span className="notification-item-text">{item.text}</span>
-                          </button>
-                        ))}
-                      </div>
-                    )}
-
-                    <button
-                      type="button"
-                      className="text-button notification-settings-link"
-                      onClick={() => {
-                        setShowNotifications(false)
-                        setShowProfile(true)
-                      }}
-                    >
-                      Открыть настройки
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              <div className="user-menu-shell" ref={userMenuRef}>
-                <button
-                  type="button"
-                  className={`icon-button user-menu-button ${showUserMenu ? 'user-menu-button--open' : ''}`}
-                  onClick={() => {
-                    setShowUserMenu(prev => !prev)
-                    setShowNotifications(false)
-                    setShowGoalMenu(false)
-                  }}
-                  aria-label="Меню пользователя"
-                  aria-haspopup="menu"
-                  aria-expanded={showUserMenu}
-                >
-                  <User size={20} weight="regular" aria-hidden />
-                </button>
-
-                {showUserMenu && (
-                  <div className="user-menu-panel" role="menu" aria-label="Пользователь">
-                    <button
-                      type="button"
-                      className="user-menu-item"
-                      onClick={() => openProfileScreen('profile')}
-                    >
-                      <User size={18} weight="regular" aria-hidden />
-                      <span>Профиль</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="user-menu-item"
-                      onClick={() => openProfileScreen('settings')}
-                    >
-                      <Gear size={18} weight="regular" aria-hidden />
-                      <span>Настройки</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="user-menu-item user-menu-item--danger"
-                      onClick={handleMenuLogout}
-                    >
-                      <SignOut size={18} weight="regular" aria-hidden />
-                      <span>Выйти</span>
-                    </button>
-                  </div>
-                )}
-              </div>
+              <button
+                type="button"
+                className="icon-button agenda-settings-button"
+                onClick={() => setShowProfile(true)}
+                aria-label="Настройки"
+              >
+                <Gear size={20} weight="regular" aria-hidden />
+              </button>
             </div>
           </header>
-
-          {showUserMenu && (
-            <button
-              type="button"
-              className="user-menu-backdrop"
-              aria-hidden="true"
-              tabIndex={-1}
-              onClick={() => setShowUserMenu(false)}
-            />
-          )}
 
           <div className="agenda-layout">
             <div className="agenda-column agenda-column--main">
@@ -2816,8 +2535,6 @@ function App() {
                           aria-expanded={showGoalMenu}
                           onClick={() => {
                             setShowGoalMenu(prev => !prev)
-                            setShowNotifications(false)
-                            setShowUserMenu(false)
                           }}
                         >
                           <span className="goal-selector-button-label">{activeGoal.text}</span>
@@ -3124,15 +2841,6 @@ function App() {
                   )
                 )}
               </div>
-              {activeGoal && (
-                <button
-                  type="button"
-                  className="secondary-button side-action-button"
-                  onClick={() => openTaskEditor(activeGoal.id)}
-                >
-                  Добавить шаг вручную
-                </button>
-              )}
             </aside>
           </div>
         </section>
@@ -3511,139 +3219,66 @@ function App() {
 
       {showProfile && (
         <section className="screen screen--profile">
-          <header className="screen-header">
-            <button type="button" className="text-button text-button--with-icon" onClick={() => setShowProfile(false)}>
+          <header className="screen-header screen-header--profile">
+            <button
+              type="button"
+              className="text-button text-button--with-icon settings-back-button"
+              onClick={() => setShowProfile(false)}
+            >
               <ArrowLeft size={18} weight="regular" aria-hidden />
               План
             </button>
             <div className="screen-header-copy">
               <h1>Настройки</h1>
-              <p className="secondary-text settings-screen-copy">Управляйте своим профилем и приложением</p>
+              <p className="secondary-text settings-screen-copy">Управляйте своим аккаунтом</p>
             </div>
-            <div />
+            <span className="icon-button settings-header-button" aria-hidden="true">
+              <Gear size={20} weight="regular" />
+            </span>
           </header>
           <div className="settings-sections">
-            <section className="settings-section" ref={profileSectionRef}>
-              <div className="settings-section-title">
-                <span className="settings-section-icon" aria-hidden="true">
-                  <User size={18} weight="regular" />
-                </span>
-                <h2>Профиль</h2>
-              </div>
+            <section className="settings-section">
               <div className="settings-card">
-                <div className="settings-input-row">
-                  <label className="settings-field">
-                    <span className="settings-info-label">Имя</span>
-                    <input
-                      type="text"
-                      className="settings-text-input"
-                      value={nameDraft}
-                      onChange={event => {
-                        setNameDraft(event.target.value)
-                        setProfileError('')
-                        setProfileInfo('')
-                      }}
-                      placeholder="Ваше имя"
-                      maxLength={80}
-                    />
-                  </label>
+                <div className="settings-card-head">
+                  <h2>Профиль</h2>
                 </div>
-                <div className="settings-input-row">
-                  <label className="settings-field settings-field--locked">
-                    <span className="settings-info-label">Почта</span>
-                    <span className="settings-input-shell settings-input-shell--locked">
-                      <input
-                        type="email"
-                        className="settings-text-input settings-text-input--locked"
-                        value={userEmail || ''}
-                        readOnly
-                        aria-readonly="true"
-                      />
-                      <span className="settings-input-trailing" aria-hidden="true">
-                        <Lock size={16} weight="regular" />
-                      </span>
-                    </span>
-                  </label>
+                <div className="settings-info-row">
+                  <span className="settings-info-label">Имя</span>
+                  <strong>{userName || 'Без имени'}</strong>
                 </div>
-                <p className="secondary-text settings-card-note">Данные аккаунта</p>
-                <div className="settings-card-actions">
-                  {profileError ? <p className="settings-status-text settings-status-text--error">{profileError}</p> : null}
-                  {!profileError && profileInfo ? (
-                    <p className="settings-status-text settings-status-text--success">{profileInfo}</p>
-                  ) : null}
-                  <button
-                    type="button"
-                    className="primary-button settings-save-button"
-                    onClick={saveProfileSettings}
-                    disabled={!canSaveProfile}
-                  >
-                    {profileBusy ? 'Сохраняем…' : 'Сохранить изменения'}
-                  </button>
+                <div className="settings-info-row">
+                  <span className="settings-info-label">Почта</span>
+                  <strong>{userEmail || 'Без почты'}</strong>
                 </div>
               </div>
             </section>
 
-            <section className="settings-section" ref={settingsSectionRef}>
-              <div className="settings-section-title">
-                <span className="settings-section-icon" aria-hidden="true">
-                  <Lock size={18} weight="regular" />
-                </span>
-                <h2>Безопасность</h2>
-              </div>
+            <section className="settings-section">
               <div className="settings-card">
+                <div className="settings-card-head">
+                  <h2>Безопасность</h2>
+                </div>
                 <button
                   type="button"
                   className="settings-action-row"
                   onClick={beginPasswordResetFromSettings}
                   disabled={authBusy || !isValidEmail(userEmail)}
                 >
-                  <span>Восстановить пароль</span>
+                  <span>Сменить пароль</span>
                   <CaretRight size={18} weight="bold" aria-hidden />
                 </button>
-                <p className="secondary-text settings-card-note">
-                  Рекомендуем периодически обновлять пароль для защиты аккаунта.
-                </p>
               </div>
             </section>
 
             <section className="settings-section">
-              <div className="settings-section-title">
-                <span className="settings-section-icon" aria-hidden="true">
-                  <Database size={18} weight="regular" />
-                </span>
-                <h2>Данные</h2>
-              </div>
               <div className="settings-card">
                 <button
                   type="button"
-                  className="settings-action-row"
-                  onClick={clearCompletedHistory}
-                  disabled={!hasResettableData}
+                  className="settings-action-row settings-action-row--danger settings-action-row--center"
+                  onClick={logoutUser}
                 >
-                  <span>Сбросить данные</span>
-                  <CaretRight size={18} weight="bold" aria-hidden />
-                </button>
-                <p className="secondary-text settings-card-note">
-                  {hasResettableData
-                    ? 'Удаление данных очистит цели, завершённые цели и недавние генерации в этом аккаунте.'
-                    : 'Пока нет данных для сброса.'}
-                </p>
-              </div>
-            </section>
-
-            <section className="settings-section settings-section--danger">
-              <div className="settings-section-title settings-section-title--danger">
-                <span className="settings-section-icon settings-section-icon--danger" aria-hidden="true">
-                  <SignOut size={18} weight="regular" />
-                </span>
-                <h2>Выход</h2>
-              </div>
-              <div className="settings-card">
-                <button type="button" className="settings-action-row settings-action-row--danger" onClick={logoutUser}>
                   <span>Выйти из аккаунта</span>
-                  <CaretRight size={18} weight="bold" aria-hidden />
                 </button>
-                <p className="secondary-text settings-card-note">Вы будете перенаправлены на экран входа.</p>
               </div>
             </section>
           </div>
