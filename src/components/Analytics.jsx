@@ -232,18 +232,19 @@ function buildActivityEntries(goals, bounds, view) {
 
   const entries = buckets.map(bucket => ({ ...bucket, details: [] }))
   const startTime = bounds?.start?.getTime?.() || 0
+  const fromKey = bounds?.start ? toLocalDateKey(bounds.start) : ''
+  const toKey = bounds?.end ? toLocalDateKey(bounds.end) : ''
 
   for (const goal of goals) {
     for (const step of goal.steps || []) {
       if (!step.completed) continue
       const dateKey = getMicroStepActivityDateKey(step)
       if (!dateKey) continue
+      if (fromKey && toKey && (dateKey < fromKey || dateKey > toKey)) continue
 
       const stepDate = new Date(`${dateKey}T12:00:00`)
       const stepTime = stepDate.getTime()
       if (!Number.isFinite(stepTime)) continue
-      if (bounds?.start && stepTime < bounds.start.getTime()) continue
-      if (bounds?.end && stepTime > bounds.end.getTime()) continue
 
       let entry = null
       if (view === 'week') {
