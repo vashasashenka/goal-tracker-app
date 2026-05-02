@@ -331,15 +331,6 @@ function getAgendaTaskTone(task, todayKey) {
   return 'planned'
 }
 
-function getAgendaTaskLabel(task, todayKey) {
-  if (task?.completed) return 'Выполнено'
-  const dateKey = normalizeIsoDate(task?.recommendedDate)
-  if (!dateKey) return 'Без даты'
-  if (dateKey < todayKey) return 'Просрочено'
-  if (dateKey === todayKey) return 'Сегодня'
-  return 'Запланировано'
-}
-
 function GoalCategoryIcon({ category, size = 22 }) {
   const p = { size, weight: 'regular', 'aria-hidden': true }
   if (category === 'Учёба') return <GraduationCap {...p} />
@@ -578,13 +569,18 @@ function App() {
   const [highlightedTaskIds, setHighlightedTaskIds] = useState([])
   const [showGoalMenu, setShowGoalMenu] = useState(false)
   const [showNotifications, setShowNotifications] = useState(false)
+  const [showUserMenu, setShowUserMenu] = useState(false)
   const [selectedRecommendationId, setSelectedRecommendationId] = useState(null)
+  const [profileMenuTarget, setProfileMenuTarget] = useState(null)
   const generatedDateInputRef = useRef(null)
   const generationInputRef = useRef(null)
   const agendaTasksRef = useRef(null)
   const recommendationsRef = useRef(null)
   const goalMenuRef = useRef(null)
   const notificationsRef = useRef(null)
+  const userMenuRef = useRef(null)
+  const profileSectionRef = useRef(null)
+  const settingsSectionRef = useRef(null)
 
   const normalizedUserEmail = normalizeEmail(userEmail)
   const sessionToken = String(authToken || '').trim()
@@ -986,12 +982,16 @@ function App() {
       if (showNotifications && notificationsRef.current && !notificationsRef.current.contains(event.target)) {
         setShowNotifications(false)
       }
+      if (showUserMenu && userMenuRef.current && !userMenuRef.current.contains(event.target)) {
+        setShowUserMenu(false)
+      }
     }
 
     function handleEscape(event) {
       if (event.key === 'Escape') {
         setShowGoalMenu(false)
         setShowNotifications(false)
+        setShowUserMenu(false)
         setSelectedRecommendationId(null)
       }
     }
@@ -1002,11 +1002,12 @@ function App() {
       document.removeEventListener('mousedown', handlePointerDown)
       document.removeEventListener('keydown', handleEscape)
     }
-  }, [showGoalMenu, showNotifications])
+  }, [showGoalMenu, showNotifications, showUserMenu])
 
   useEffect(() => {
     setShowGoalMenu(false)
     setShowNotifications(false)
+    setShowUserMenu(false)
     setSelectedRecommendationId(null)
   }, [activeTab, showProfile, activeGoalId])
 
@@ -1017,11 +1018,27 @@ function App() {
     }
   }, [selectedRecommendationId, selectedRecommendation])
 
+  useEffect(() => {
+    if (!showProfile || !profileMenuTarget) return
+
+    const frame = requestAnimationFrame(() => {
+      if (profileMenuTarget === 'profile') {
+        profileSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      } else if (profileMenuTarget === 'settings') {
+        settingsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }
+      setProfileMenuTarget(null)
+    })
+
+    return () => cancelAnimationFrame(frame)
+  }, [showProfile, profileMenuTarget])
+
   function setCurrentGoal(goalId) {
     setActiveGoalId(goalId)
     localStorage.setItem(activeGoalStorageKey, String(goalId))
     setRecommendations([])
     setShowGoalMenu(false)
+    setShowUserMenu(false)
     setSelectedRecommendationId(null)
   }
 
@@ -1029,9 +1046,18 @@ function App() {
     beginNewGoalGeneration()
     setShowGoalMenu(false)
     setShowNotifications(false)
+    setShowUserMenu(false)
     setSelectedRecommendationId(null)
     setActiveTab('generate')
     setShowProfile(false)
+  }
+
+  function openProfileScreen(target = 'profile') {
+    setShowUserMenu(false)
+    setShowNotifications(false)
+    setShowGoalMenu(false)
+    setProfileMenuTarget(target)
+    setShowProfile(true)
   }
 
   function replaceGoalInState(nextGoal) {
@@ -1074,6 +1100,11 @@ function App() {
     setShowNotifications(false)
   }
 
+  async function handleMenuLogout() {
+    setShowUserMenu(false)
+    await logoutUser()
+  }
+
   const utilization = useMemo(() => {
     const count = agendaMicroTasks.length
     if (count >= 6) return 'Высокая'
@@ -1113,6 +1144,7 @@ function App() {
 
     setShowGoalMenu(false)
     setShowNotifications(false)
+    setShowUserMenu(false)
     setTaskEditor({
       goalId,
       taskId: task?.id ?? null,
@@ -2624,7 +2656,7 @@ function App() {
             <div className="agenda-header-actions">
               <button
                 type="button"
-                className="agenda-create-goal-button"
+                className="agenda-create-goal-button agenda-create-goal-button--desktop"
                 onClick={openNewGoalFlow}
                 aria-label="Новая цель"
               >
@@ -2632,13 +2664,14 @@ function App() {
                 <span className="agenda-create-goal-button-label">Новая цель</span>
               </button>
 
-              <div className="notification-shell" ref={notificationsRef}>
+              <div className="notification-shell notification-shell--desktop" ref={notificationsRef}>
                 <button
                   type="button"
                   className="icon-button notification-button"
                   onClick={() => {
                     setShowNotifications(prev => !prev)
                     setShowGoalMenu(false)
+                    setShowUserMenu(false)
                   }}
                   aria-label="Уведомления"
                 >
@@ -2690,8 +2723,64 @@ function App() {
                   </div>
                 )}
               </div>
+
+              <div className="user-menu-shell" ref={userMenuRef}>
+                <button
+                  type="button"
+                  className={`icon-button user-menu-button ${showUserMenu ? 'user-menu-button--open' : ''}`}
+                  onClick={() => {
+                    setShowUserMenu(prev => !prev)
+                    setShowNotifications(false)
+                    setShowGoalMenu(false)
+                  }}
+                  aria-label="Меню пользователя"
+                  aria-haspopup="menu"
+                  aria-expanded={showUserMenu}
+                >
+                  <User size={20} weight="regular" aria-hidden />
+                </button>
+
+                {showUserMenu && (
+                  <div className="user-menu-panel" role="menu" aria-label="Пользователь">
+                    <button
+                      type="button"
+                      className="user-menu-item"
+                      onClick={() => openProfileScreen('profile')}
+                    >
+                      <User size={18} weight="regular" aria-hidden />
+                      <span>Профиль</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="user-menu-item"
+                      onClick={() => openProfileScreen('settings')}
+                    >
+                      <Gear size={18} weight="regular" aria-hidden />
+                      <span>Настройки</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="user-menu-item user-menu-item--danger"
+                      onClick={handleMenuLogout}
+                    >
+                      <SignOut size={18} weight="regular" aria-hidden />
+                      <span>Выйти</span>
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           </header>
+
+          {showUserMenu && (
+            <button
+              type="button"
+              className="user-menu-backdrop"
+              aria-hidden="true"
+              tabIndex={-1}
+              onClick={() => setShowUserMenu(false)}
+            />
+          )}
 
           <div className="agenda-layout">
             <div className="agenda-column agenda-column--main">
@@ -2728,6 +2817,7 @@ function App() {
                           onClick={() => {
                             setShowGoalMenu(prev => !prev)
                             setShowNotifications(false)
+                            setShowUserMenu(false)
                           }}
                         >
                           <span className="goal-selector-button-label">{activeGoal.text}</span>
@@ -2842,7 +2932,6 @@ function App() {
                         {section.items.map((task, index) => {
                           const todayKey = toIsoDate(new Date())
                           const visualTone = getAgendaTaskTone(task, todayKey)
-                          const taskLabel = getAgendaTaskLabel(task, todayKey)
                           const showWarning = isRecommendedDatePassed(task)
 
                           return (
@@ -2868,7 +2957,6 @@ function App() {
                                         className={`task-card-priority-dot task-card-priority-dot--${visualTone}`}
                                         aria-hidden="true"
                                       />
-                                      {taskLabel}
                                     </span>
 
                                     {task.completed ? (
@@ -3442,7 +3530,7 @@ function App() {
             <div />
           </header>
           <div className="settings-sections">
-            <section className="settings-section">
+            <section className="settings-section" ref={profileSectionRef}>
               <div className="settings-section-title">
                 <span className="settings-section-icon" aria-hidden="true">
                   <User size={18} weight="regular" />
@@ -3502,7 +3590,7 @@ function App() {
               </div>
             </section>
 
-            <section className="settings-section">
+            <section className="settings-section" ref={settingsSectionRef}>
               <div className="settings-section-title">
                 <span className="settings-section-icon" aria-hidden="true">
                   <Lock size={18} weight="regular" />
@@ -3570,17 +3658,6 @@ function App() {
       )}
         </div>
       </div>
-
-      {!showProfile && activeTab === 'agenda' && activeGoal && (
-        <button
-          type="button"
-          className="tasks-add-mobile-fixed"
-          onClick={() => openTaskEditor(activeGoal.id)}
-        >
-          <Plus size={18} weight="bold" aria-hidden />
-          Добавить шаг
-        </button>
-      )}
 
       {!showProfile && (
         <nav className="tab-bar">
