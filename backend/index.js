@@ -649,6 +649,47 @@ app.get('/api/auth/me', async (req, res) => {
   }
 })
 
+app.patch('/api/auth/profile', async (req, res) => {
+  const name = String(req.body?.name || '').trim()
+
+  if (!name) {
+    return res.status(400).json({ error: 'Имя не может быть пустым' })
+  }
+  if (name.length > 80) {
+    return res.status(400).json({ error: 'Имя должно быть короче 80 символов' })
+  }
+
+  try {
+    await ensureSchemaReady()
+    const auth = await requireAuth(req, res)
+    if (!auth) return
+
+    const result = await pool.query(
+      `
+        UPDATE users
+        SET name = $1
+        WHERE id = $2
+        RETURNING name, email
+      `,
+      [name, auth.userId]
+    )
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Аккаунт не найден' })
+    }
+
+    res.json({
+      user: {
+        name: String(result.rows[0].name || '').trim(),
+        email: normalizeEmail(result.rows[0].email),
+      },
+    })
+  } catch (error) {
+    console.error('Ошибка обновления профиля:', error)
+    res.status(500).json({ error: 'Не удалось сохранить профиль' })
+  }
+})
+
 app.post('/api/auth/logout', async (req, res) => {
   try {
     await ensureSchemaReady()

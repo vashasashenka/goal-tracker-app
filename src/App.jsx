@@ -6,14 +6,18 @@ import {
   CaretLeft,
   CaretRight,
   ChartBar,
+  Database,
   Gear,
   GraduationCap,
   Leaf,
   Lightning,
   ListBullets,
+  Lock,
   Plus,
+  SignOut,
   Sparkle,
   Target,
+  User,
   X,
 } from '@phosphor-icons/react'
 import Analytics from './components/Analytics'
@@ -298,6 +302,34 @@ function compareMicroGoalsByCheckpoint(a, b) {
   return String(a?.text || '').localeCompare(String(b?.text || ''), 'ru')
 }
 
+function formatCompactDateTime(value) {
+  const date = value ? new Date(value) : null
+  if (!date || Number.isNaN(date.getTime())) return ''
+  return date
+    .toLocaleDateString('ru-RU', {
+      day: 'numeric',
+      month: 'short',
+    })
+    .replace(/\s?г\.$/, '')
+    .replace(/\./g, '')
+}
+
+function getAgendaTaskSectionId(task, todayKey) {
+  if (task?.completed) return 'completed'
+  const dateKey = normalizeIsoDate(task?.recommendedDate)
+  if (!dateKey || dateKey <= todayKey) return 'today'
+  return 'planned'
+}
+
+function getAgendaTaskTone(task, todayKey) {
+  if (task?.completed) return 'done'
+  const dateKey = normalizeIsoDate(task?.recommendedDate)
+  if (!dateKey) return 'open'
+  if (dateKey < todayKey) return 'overdue'
+  if (dateKey === todayKey) return 'today'
+  return 'planned'
+}
+
 function GoalCategoryIcon({ category, size = 22 }) {
   const p = { size, weight: 'regular', 'aria-hidden': true }
   if (category === 'Учёба') return <GraduationCap {...p} />
@@ -509,6 +541,9 @@ function App() {
   const [authChecked, setAuthChecked] = useState(() => !initialAuthToken)
   const [authError, setAuthError] = useState('')
   const [authInfo, setAuthInfo] = useState('')
+  const [profileBusy, setProfileBusy] = useState(false)
+  const [profileError, setProfileError] = useState('')
+  const [profileInfo, setProfileInfo] = useState('')
 
   const [generationInput, setGenerationInput] = useState('')
   const [generatedSteps, setGeneratedSteps] = useState([])
@@ -556,6 +591,11 @@ function App() {
     isValidResetCode(resetCodeDraft) &&
     String(resetNewPasswordDraft || '').length >= 8 &&
     resetNewPasswordDraft === resetNewPasswordRepeatDraft
+  const trimmedNameDraft = String(nameDraft || '').trim()
+  const canSaveProfile =
+    Boolean(trimmedNameDraft) &&
+    trimmedNameDraft !== String(userName || '').trim() &&
+    !profileBusy
   const activeGoalStorageKey = useMemo(
     () => makeScopedStorageKey(ACTIVE_GOAL_KEY, storageScope),
     [storageScope]
@@ -565,6 +605,7 @@ function App() {
     () => makeScopedStorageKey(COMPLETED_GOALS_KEY, storageScope),
     [storageScope]
   )
+  const hasResettableData = goals.length > 0 || completedGoals.length > 0 || recentGenerations.length > 0
 
   function resetGenerationUi() {
     setGenerationInput('')
@@ -673,6 +714,8 @@ function App() {
         setUserEmail(nextEmail)
         setNameDraft(nextName)
         setEmailDraft(nextEmail)
+        setProfileError('')
+        setProfileInfo('')
         setAuthError('')
         setAuthInfo('')
       } catch (error) {
@@ -686,6 +729,8 @@ function App() {
         setUserEmail('')
         setNameDraft('')
         setEmailDraft('')
+        setProfileError('')
+        setProfileInfo('')
         setAuthError('Сессия истекла. Войдите снова.')
         setAuthInfo('')
       } finally {
@@ -811,6 +856,40 @@ function App() {
       return compareMicroGoalsByCheckpoint(a, b)
     })
   }, [activeGoal])
+
+  const agendaTaskSections = useMemo(() => {
+    const todayKey = toIsoDate(new Date())
+    const groups = {
+      today: [],
+      planned: [],
+      completed: [],
+    }
+
+    for (const task of agendaMicroTasks) {
+      groups[getAgendaTaskSectionId(task, todayKey)].push(task)
+    }
+
+    return [
+      {
+        id: 'today',
+        title: 'Сегодня',
+        description: 'Ближайшие и просроченные шаги',
+        items: groups.today,
+      },
+      {
+        id: 'planned',
+        title: 'Запланировано',
+        description: 'Шаги на следующие дни',
+        items: groups.planned,
+      },
+      {
+        id: 'completed',
+        title: 'Выполнено',
+        description: 'То, что уже закрыто',
+        items: groups.completed,
+      },
+    ].filter(section => section.items.length > 0)
+  }, [agendaMicroTasks])
 
   const activeGoalProgress = useMemo(() => {
     const total = activeGoal?.microGoals?.length || 0
@@ -1326,7 +1405,7 @@ function App() {
       highlightAgendaTasks([nextMicroGoal.id])
       await refillRecommendationSlotInPlace(item.id, saved)
     } catch (error) {
-      console.error('Рекомендация в повестку:', error)
+      console.error('Рекомендация в план:', error)
       setAiError('Не удалось добавить рекомендацию')
     }
   }
@@ -1444,7 +1523,7 @@ function App() {
       setGenCustomDateDraft('')
       closeGeneratedDateEditor()
     } catch (error) {
-      console.error('Свой микрошаг на повестку:', error)
+      console.error('Свой микрошаг в план:', error)
       setAiError('Не удалось добавить шаг')
     } finally {
       setIsAddingOwnStep(false)
@@ -1773,6 +1852,8 @@ function App() {
     setUserEmail(nextEmail)
     setNameDraft(nextName)
     setEmailDraft(nextEmail)
+    setProfileError('')
+    setProfileInfo('')
     setPasswordDraft('')
     setPasswordRepeatDraft('')
     setAuthMode('login')
@@ -1894,6 +1975,42 @@ function App() {
     }
   }
 
+  function finalizeSignedOutState({
+    nextAuthMode = 'login',
+    preserveEmail = '',
+    nextAuthInfo = '',
+    nextResetStage = 'request',
+  } = {}) {
+    const nextEmail = normalizeEmail(preserveEmail)
+
+    localStorage.removeItem(AUTH_TOKEN_KEY)
+    localStorage.removeItem(USER_NAME_KEY)
+    localStorage.removeItem(USER_EMAIL_KEY)
+    setAuthToken('')
+    setUserName('')
+    setUserEmail('')
+    setNameDraft('')
+    resetRecoveryFlow({ keepEmail: Boolean(nextEmail) })
+    setEmailDraft(nextEmail)
+    setProfileBusy(false)
+    setProfileError('')
+    setProfileInfo('')
+    setPasswordDraft('')
+    setPasswordRepeatDraft('')
+    setResetStage(nextResetStage)
+    setAuthMode(nextAuthMode)
+    setShowProfile(false)
+    setActiveTab('agenda')
+    setAiError('')
+    setAuthError('')
+    setAuthInfo(nextAuthInfo)
+    setRecommendations([])
+    setRecommendationsSource('')
+    setRecommendationsCache({})
+    closeTaskEditor()
+    resetGenerationUi()
+  }
+
   async function logoutUser() {
     try {
       if (sessionToken) {
@@ -1905,27 +2022,81 @@ function App() {
     } catch (error) {
       console.error('Выход из аккаунта:', error)
     } finally {
-      localStorage.removeItem(AUTH_TOKEN_KEY)
-      localStorage.removeItem(USER_NAME_KEY)
-      localStorage.removeItem(USER_EMAIL_KEY)
-      setAuthToken('')
-      setUserName('')
-      setUserEmail('')
-      setNameDraft('')
-      setEmailDraft('')
-      setPasswordDraft('')
-      setPasswordRepeatDraft('')
-      resetRecoveryFlow({ keepEmail: false })
-      setShowProfile(false)
-      setActiveTab('agenda')
-      setAiError('')
-      setAuthError('')
-      setAuthInfo('')
-      setRecommendations([])
-      setRecommendationsSource('')
-      setRecommendationsCache({})
-      closeTaskEditor()
-      resetGenerationUi()
+      finalizeSignedOutState()
+    }
+  }
+
+  async function beginPasswordResetFromSettings() {
+    const email = normalizeEmail(userEmail)
+    if (!isValidEmail(email)) return
+
+    const confirmed = window.confirm(
+      'Мы отправим код на вашу почту и откроем экран восстановления пароля. Продолжить?'
+    )
+    if (!confirmed) return
+
+    setAuthBusy(true)
+    setAiError('')
+    setAuthError('')
+    setAuthInfo('')
+
+    try {
+      const payload = await apiRequest('/api/auth/password-reset/request', {
+        method: 'POST',
+        body: { email },
+      })
+
+      try {
+        if (sessionToken) {
+          await apiRequest('/api/auth/logout', {
+            method: 'POST',
+            sessionToken,
+          })
+        }
+      } catch (error) {
+        console.error('Выход перед восстановлением пароля:', error)
+      }
+
+      finalizeSignedOutState({
+        nextAuthMode: 'reset',
+        preserveEmail: email,
+        nextAuthInfo: payload?.message || 'Мы отправили код для сброса пароля на вашу почту.',
+        nextResetStage: 'confirm',
+      })
+    } catch (error) {
+      console.error('Запуск восстановления пароля из настроек:', error)
+      setAiError(error?.message || 'Не удалось открыть восстановление пароля')
+    } finally {
+      setAuthBusy(false)
+    }
+  }
+
+  async function saveProfileSettings() {
+    const nextName = String(nameDraft || '').trim()
+    if (!sessionToken || !nextName || nextName === String(userName || '').trim()) return
+
+    setProfileBusy(true)
+    setProfileError('')
+    setProfileInfo('')
+
+    try {
+      const payload = await apiRequest('/api/auth/profile', {
+        method: 'PATCH',
+        sessionToken,
+        body: {
+          name: nextName,
+        },
+      })
+
+      const savedName = String(payload?.user?.name || nextName).trim()
+      setUserName(savedName)
+      setNameDraft(savedName)
+      setProfileInfo('Имя сохранено')
+    } catch (error) {
+      console.error('Сохранение профиля:', error)
+      setProfileError(error?.message || 'Не удалось сохранить имя')
+    } finally {
+      setProfileBusy(false)
     }
   }
 
@@ -2422,97 +2593,140 @@ function App() {
                   <p className="secondary-text">Выберите цель выше — здесь появятся её шаги</p>
                 )
               ) : (
-                <div className="tasks-grid">
-                  {agendaMicroTasks.map((task, index) => (
-                    <article
-                      key={task.id}
-                      className={`task-card micro-appear ${task.completed ? 'task-card--completed' : ''} ${highlightedTaskIds.includes(task.id) ? 'task-card--fresh' : ''}`}
-                      style={{ '--appear-i': index }}
-                    >
-                      <div className="task-card-main">
-                        <button
-                          type="button"
-                          className={`task-card-check ${task.completed ? 'task-card-check--done' : ''}`}
-                          aria-label={task.completed ? 'Вернуть шаг в работу' : 'Отметить шаг выполненным'}
-                          onClick={() => completeMicroGoal(activeGoal.id, task.id, !task.completed)}
-                        >
-                          {task.completed ? '✓' : ''}
-                        </button>
-                        <button
-                          type="button"
-                          className="task-card-text-button"
-                          onClick={() => startInlineTaskEdit(task)}
-                        >
-                          {inlineEditTaskId === task.id ? (
-                            <span className="task-inline-edit">
-                              <input
-                                type="text"
-                                className="task-inline-input"
-                                value={inlineEditText}
-                                onChange={e => setInlineEditText(e.target.value)}
-                                autoFocus
-                                onKeyDown={e => {
-                                  if (e.key === 'Enter') {
-                                    e.preventDefault()
-                                    saveInlineTaskEdit(activeGoal.id, task.id)
-                                  } else if (e.key === 'Escape') {
-                                    e.preventDefault()
-                                    cancelInlineTaskEdit()
-                                  }
-                                }}
-                              />
-                              <span className="task-inline-actions">
+                <div className="task-sections">
+                  {agendaTaskSections.map((section, sectionIndex) => (
+                    <section key={section.id} className={`task-section task-section--${section.id}`}>
+                      <div className="task-section-head">
+                        <div>
+                          <h3>{section.title}</h3>
+                          <p className="secondary-text">{section.description}</p>
+                        </div>
+                        <span className={`task-section-count task-section-count--${section.id}`}>
+                          {section.items.length}
+                        </span>
+                      </div>
+
+                      <div className="tasks-grid">
+                        {section.items.map((task, index) => {
+                          const visualTone = getAgendaTaskTone(task, toIsoDate(new Date()))
+                          const showWarning = isRecommendedDatePassed(task)
+
+                          return (
+                            <article
+                              key={task.id}
+                              className={`task-card micro-appear task-card--${visualTone} ${task.completed ? 'task-card--completed' : ''} ${highlightedTaskIds.includes(task.id) ? 'task-card--fresh' : ''}`}
+                              style={{ '--appear-i': sectionIndex * 6 + index }}
+                            >
+                              <div className="task-card-main">
                                 <button
                                   type="button"
-                                  className="text-button task-inline-action"
-                                  disabled={inlineEditBusy || !inlineEditText.trim()}
-                                  onClick={e => {
-                                    e.stopPropagation()
-                                    saveInlineTaskEdit(activeGoal.id, task.id)
-                                  }}
+                                  className={`task-card-check ${task.completed ? 'task-card-check--done' : ''}`}
+                                  aria-label={task.completed ? 'Вернуть шаг в работу' : 'Отметить шаг выполненным'}
+                                  onClick={() => completeMicroGoal(activeGoal.id, task.id, !task.completed)}
                                 >
-                                  Сохранить
+                                  {task.completed ? '✓' : ''}
                                 </button>
-                                <button
-                                  type="button"
-                                  className="text-button task-inline-action task-inline-action--muted"
-                                  disabled={inlineEditBusy}
-                                  onClick={e => {
-                                    e.stopPropagation()
-                                    cancelInlineTaskEdit()
-                                  }}
-                                >
-                                  Отмена
-                                </button>
-                              </span>
-                            </span>
-                          ) : (
-                            <strong>{task.text}</strong>
-                          )}
-                        </button>
+
+                                <div className="task-card-body">
+                                  <div className="task-card-meta">
+                                    <span className="task-card-goal-badge" aria-hidden="true">
+                                      <GoalCategoryIcon category={activeGoal.category} size={14} />
+                                    </span>
+                                    <span
+                                      className={`task-card-priority-dot task-card-priority-dot--${visualTone}`}
+                                      aria-hidden="true"
+                                    />
+                                    <span className="task-card-status-label">{section.title}</span>
+
+                                    {task.completed ? (
+                                      <span className="task-date-badge task-date-badge--done">
+                                        {task.completedAt
+                                          ? `Готово ${formatCompactDateTime(task.completedAt)}`
+                                          : 'Выполнено'}
+                                      </span>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        className={`task-date-button ${showWarning ? 'task-date-button--overdue' : ''}`}
+                                        aria-label="Выбрать дату для шага"
+                                        onClick={() =>
+                                          openGeneratedDateEditor('task', {
+                                            goalId: activeGoal.id,
+                                            taskId: task.id,
+                                            value: normalizeIsoDate(task.recommendedDate),
+                                          })
+                                        }
+                                      >
+                                        {task.recommendedDate
+                                          ? formatRecommendedDate(task.recommendedDate)
+                                          : 'Без даты'}
+                                      </button>
+                                    )}
+                                  </div>
+
+                                  <button
+                                    type="button"
+                                    className="task-card-text-button"
+                                    onClick={() => startInlineTaskEdit(task)}
+                                  >
+                                    {inlineEditTaskId === task.id ? (
+                                      <span className="task-inline-edit">
+                                        <input
+                                          type="text"
+                                          className="task-inline-input"
+                                          value={inlineEditText}
+                                          onChange={e => setInlineEditText(e.target.value)}
+                                          autoFocus
+                                          onKeyDown={e => {
+                                            if (e.key === 'Enter') {
+                                              e.preventDefault()
+                                              saveInlineTaskEdit(activeGoal.id, task.id)
+                                            } else if (e.key === 'Escape') {
+                                              e.preventDefault()
+                                              cancelInlineTaskEdit()
+                                            }
+                                          }}
+                                        />
+                                        <span className="task-inline-actions">
+                                          <button
+                                            type="button"
+                                            className="text-button task-inline-action"
+                                            disabled={inlineEditBusy || !inlineEditText.trim()}
+                                            onClick={e => {
+                                              e.stopPropagation()
+                                              saveInlineTaskEdit(activeGoal.id, task.id)
+                                            }}
+                                          >
+                                            Сохранить
+                                          </button>
+                                          <button
+                                            type="button"
+                                            className="text-button task-inline-action task-inline-action--muted"
+                                            disabled={inlineEditBusy}
+                                            onClick={e => {
+                                              e.stopPropagation()
+                                              cancelInlineTaskEdit()
+                                            }}
+                                          >
+                                            Отмена
+                                          </button>
+                                        </span>
+                                      </span>
+                                    ) : (
+                                      <strong>{task.text}</strong>
+                                    )}
+                                  </button>
+                                </div>
+                              </div>
+
+                              {showWarning && (
+                                <span className="task-card-warning">Рекомендованная дата уже прошла</span>
+                              )}
+                            </article>
+                          )
+                        })}
                       </div>
-                      <div className="task-card-actions">
-                        <button
-                          type="button"
-                          className={`task-date-button ${isRecommendedDatePassed(task) ? 'task-date-button--overdue' : ''}`}
-                          aria-label="Выбрать дату для шага"
-                          onClick={() =>
-                            openGeneratedDateEditor('task', {
-                              goalId: activeGoal.id,
-                              taskId: task.id,
-                              value: normalizeIsoDate(task.recommendedDate),
-                            })
-                          }
-                        >
-                          {task.recommendedDate
-                            ? `Дата: ${formatRecommendedDate(task.recommendedDate)}`
-                            : 'Выбрать дату'}
-                        </button>
-                      </div>
-                      {isRecommendedDatePassed(task) && (
-                        <span className="task-card-warning">Рекомендованная дата уже прошла</span>
-                      )}
-                    </article>
+                    </section>
                   ))}
                 </div>
               )}
@@ -2565,7 +2779,7 @@ function App() {
                             <button
                               type="button"
                               className="gen-step-icon-btn gen-step-add-btn"
-                              aria-label="Добавить в повестку"
+                              aria-label="Добавить в план"
                               onClick={() => addRecommendationToActiveGoal(item)}
                             >
                               <Plus size={20} weight="bold" aria-hidden />
@@ -2605,8 +2819,8 @@ function App() {
               </h1>
               <p className="secondary-text generation-screen-copy">
                 {showGeneratedResult
-                  ? 'Добавляйте шаги по одному и сразу планируйте дату.'
-                  : 'Опишите цель, и мы предложим стартовые шаги.'}
+                  ? 'Вот стартовый план. Добавляйте шаги по одному и сразу ставьте дату.'
+                  : 'Опиши цель — мы разобьём её на шаги.'}
               </p>
             </div>
             <div />
@@ -2620,7 +2834,7 @@ function App() {
                   <h2 className="center-title generation-main-title">Опиши цель</h2>
                   <div className="generation-form-card">
                     <label htmlFor="generation-input" className="generation-label">
-                      Какая у тебя цель?
+                      Опиши цель
                     </label>
                     <textarea
                       ref={generationInputRef}
@@ -2653,6 +2867,15 @@ function App() {
                             {example}
                           </button>
                         ))}
+                      </div>
+                    </div>
+                    <div className="generation-preview-card" aria-hidden="true">
+                      <span className="generation-label generation-label--muted">Пример результата</span>
+                      <div className="generation-preview-lines">
+                        <strong>Выучить английский</strong>
+                        <span>1. Выучить 10 новых слов</span>
+                        <span>2. Посмотреть короткое видео</span>
+                        <span>3. Составить диалог из 5 фраз</span>
                       </div>
                     </div>
                   </div>
@@ -2734,8 +2957,10 @@ function App() {
               </div>
 
               <div className="gen-ai-heading">
-                <h2 className="gen-micro-title">Микрошаги, сгенерированные ИИ</h2>
-                <p className="secondary-text gen-ai-sub">Подсказки модели по задаче выше — добавляйте по одной кнопкой «+»</p>
+                <h2 className="gen-micro-title">Вот план</h2>
+                <p className="secondary-text gen-ai-sub">
+                  Добавляйте шаги по одному и сразу переносите их в план.
+                </p>
               </div>
 
               {isGenerating && (
@@ -2776,7 +3001,7 @@ function App() {
                         <button
                           type="button"
                           className="gen-step-icon-btn gen-step-add-btn"
-                          aria-label="Добавить в повестку и сгенерировать новый шаг"
+                          aria-label="Добавить в план и сгенерировать новый шаг"
                           disabled={
                             isGenerating || isAddingOwnStep || genRowBusyId === step.id
                           }
@@ -2824,7 +3049,7 @@ function App() {
                   <button
                     type="button"
                     className="gen-step-icon-btn gen-step-add-btn gen-own-add-btn"
-                    aria-label="Добавить свой шаг на повестку"
+                    aria-label="Добавить свой шаг в план"
                     disabled={isAddingOwnStep || !genCustomInput.trim()}
                     onClick={addOwnMicroStepToAgenda}
                   >
@@ -2894,22 +3119,137 @@ function App() {
               <ArrowLeft size={18} weight="regular" aria-hidden />
               План
             </button>
-            <h1>Настройки</h1>
+            <div className="screen-header-copy">
+              <h1>Настройки</h1>
+              <p className="secondary-text settings-screen-copy">Управляйте своим профилем и приложением</p>
+            </div>
             <div />
           </header>
-          <div className="settings-list">
-            <div className="list-row list-row--stacked">
-              <span className="list-row-label">Имя</span>
-              <strong>{userName || 'Без имени'}</strong>
-            </div>
-            <div className="list-row list-row--stacked">
-              <span className="list-row-label">Почта</span>
-              <strong>{userEmail || 'Не указана'}</strong>
-            </div>
+          <div className="settings-sections">
+            <section className="settings-section">
+              <div className="settings-section-title">
+                <span className="settings-section-icon" aria-hidden="true">
+                  <User size={18} weight="regular" />
+                </span>
+                <h2>Профиль</h2>
+              </div>
+              <div className="settings-card">
+                <div className="settings-input-row">
+                  <label className="settings-field">
+                    <span className="settings-info-label">Имя</span>
+                    <input
+                      type="text"
+                      className="settings-text-input"
+                      value={nameDraft}
+                      onChange={event => {
+                        setNameDraft(event.target.value)
+                        setProfileError('')
+                        setProfileInfo('')
+                      }}
+                      placeholder="Ваше имя"
+                      maxLength={80}
+                    />
+                  </label>
+                </div>
+                <div className="settings-input-row">
+                  <label className="settings-field settings-field--locked">
+                    <span className="settings-info-label">Почта</span>
+                    <span className="settings-input-shell settings-input-shell--locked">
+                      <input
+                        type="email"
+                        className="settings-text-input settings-text-input--locked"
+                        value={userEmail || ''}
+                        readOnly
+                        aria-readonly="true"
+                      />
+                      <span className="settings-input-trailing" aria-hidden="true">
+                        <Lock size={16} weight="regular" />
+                      </span>
+                    </span>
+                  </label>
+                </div>
+                <p className="secondary-text settings-card-note">Данные аккаунта</p>
+                <div className="settings-card-actions">
+                  {profileError ? <p className="settings-status-text settings-status-text--error">{profileError}</p> : null}
+                  {!profileError && profileInfo ? (
+                    <p className="settings-status-text settings-status-text--success">{profileInfo}</p>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="primary-button settings-save-button"
+                    onClick={saveProfileSettings}
+                    disabled={!canSaveProfile}
+                  >
+                    {profileBusy ? 'Сохраняем…' : 'Сохранить изменения'}
+                  </button>
+                </div>
+              </div>
+            </section>
+
+            <section className="settings-section">
+              <div className="settings-section-title">
+                <span className="settings-section-icon" aria-hidden="true">
+                  <Lock size={18} weight="regular" />
+                </span>
+                <h2>Безопасность</h2>
+              </div>
+              <div className="settings-card">
+                <button
+                  type="button"
+                  className="settings-action-row"
+                  onClick={beginPasswordResetFromSettings}
+                  disabled={authBusy || !isValidEmail(userEmail)}
+                >
+                  <span>Восстановить пароль</span>
+                  <CaretRight size={18} weight="bold" aria-hidden />
+                </button>
+                <p className="secondary-text settings-card-note">
+                  Рекомендуем периодически обновлять пароль для защиты аккаунта.
+                </p>
+              </div>
+            </section>
+
+            <section className="settings-section">
+              <div className="settings-section-title">
+                <span className="settings-section-icon" aria-hidden="true">
+                  <Database size={18} weight="regular" />
+                </span>
+                <h2>Данные</h2>
+              </div>
+              <div className="settings-card">
+                <button
+                  type="button"
+                  className="settings-action-row"
+                  onClick={clearCompletedHistory}
+                  disabled={!hasResettableData}
+                >
+                  <span>Сбросить данные</span>
+                  <CaretRight size={18} weight="bold" aria-hidden />
+                </button>
+                <p className="secondary-text settings-card-note">
+                  {hasResettableData
+                    ? 'Удаление данных очистит цели, завершённые цели и недавние генерации в этом аккаунте.'
+                    : 'Пока нет данных для сброса.'}
+                </p>
+              </div>
+            </section>
+
+            <section className="settings-section settings-section--danger">
+              <div className="settings-section-title settings-section-title--danger">
+                <span className="settings-section-icon settings-section-icon--danger" aria-hidden="true">
+                  <SignOut size={18} weight="regular" />
+                </span>
+                <h2>Выход</h2>
+              </div>
+              <div className="settings-card">
+                <button type="button" className="settings-action-row settings-action-row--danger" onClick={logoutUser}>
+                  <span>Выйти из аккаунта</span>
+                  <CaretRight size={18} weight="bold" aria-hidden />
+                </button>
+                <p className="secondary-text settings-card-note">Вы будете перенаправлены на экран входа.</p>
+              </div>
+            </section>
           </div>
-          <button type="button" className="danger-button profile-logout-button" onClick={logoutUser}>
-            Выйти
-          </button>
         </section>
       )}
 

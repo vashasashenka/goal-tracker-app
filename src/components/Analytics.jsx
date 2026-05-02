@@ -21,10 +21,15 @@ const RANGE_OPTIONS = [
   { id: 'all', label: 'Все время' },
 ]
 
-const ACTIVITY_VIEW_OPTIONS = [
-  { id: 'day', label: 'По дням' },
-  { id: 'week', label: 'По неделям' },
-]
+const ACTIVITY_VIEW_OPTIONS = {
+  week: [{ id: 'day', label: 'По дням' }],
+  month: [
+    { id: 'day', label: 'По дням' },
+    { id: 'week', label: 'По неделям' },
+  ],
+  year: [{ id: 'week', label: 'По неделям' }],
+  all: [{ id: 'month', label: 'По месяцам' }],
+}
 
 const DOW_SHORT = ['ВС', 'ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ', 'СБ']
 const INSIGHT_ICONS = ['↗', '▥', '🔥']
@@ -65,6 +70,12 @@ function formatShortMonth(dateLike) {
   return date.toLocaleDateString('ru-RU', { month: 'short' }).replace(/\./g, '')
 }
 
+function formatFullMonth(dateLike) {
+  const date = dateLike ? new Date(dateLike) : null
+  if (!date || Number.isNaN(date.getTime())) return ''
+  return date.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' }).replace(/\s?г\.$/, '')
+}
+
 function formatTimeLabel(value) {
   const date = value ? new Date(value) : null
   if (!date || Number.isNaN(date.getTime())) return 'Без времени'
@@ -93,6 +104,13 @@ function addDays(dateLike, days) {
   return date
 }
 
+function startOfMonth(dateLike) {
+  const date = startOfDay(dateLike)
+  if (!date) return null
+  date.setDate(1)
+  return date
+}
+
 function toLocalDateKey(value) {
   const date = value ? new Date(value) : null
   if (!date || Number.isNaN(date.getTime())) return ''
@@ -100,6 +118,14 @@ function toLocalDateKey(value) {
   const m = String(date.getMonth() + 1).padStart(2, '0')
   const d = String(date.getDate()).padStart(2, '0')
   return `${y}-${m}-${d}`
+}
+
+function toMonthKey(value) {
+  const date = value ? new Date(value) : null
+  if (!date || Number.isNaN(date.getTime())) return ''
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  return `${y}-${m}`
 }
 
 function getRangeBounds(range, goals, now = new Date()) {
@@ -154,6 +180,22 @@ function getRangeDates(bounds, limit = 500) {
   return dates
 }
 
+function getRangeMonths(bounds, limit = 120) {
+  if (!bounds?.start || !bounds?.end) return []
+  const months = []
+  const end = startOfMonth(bounds.end)
+  let cursor = startOfMonth(bounds.start)
+  let guard = 0
+
+  while (cursor && end && cursor.getTime() <= end.getTime() && guard < limit) {
+    months.push(toMonthKey(cursor))
+    cursor.setMonth(cursor.getMonth() + 1)
+    guard += 1
+  }
+
+  return months
+}
+
 function formatWeekHeading(startKey, endKey) {
   return `${formatDashboardDate(`${startKey}T12:00:00`)} — ${formatDashboardDate(`${endKey}T12:00:00`)}`
 }
@@ -175,8 +217,40 @@ function formatWeekLabel(startKey, endKey) {
   return `${startDay} ${startMonth} – ${endDay} ${endMonth}`
 }
 
+function getLabelStep(total, view) {
+  if (view === 'day') {
+    if (total <= 10) return 1
+    if (total <= 20) return 2
+    return 3
+  }
+  if (view === 'week') {
+    if (total <= 8) return 1
+    if (total <= 16) return 2
+    return 4
+  }
+  if (total <= 12) return 1
+  if (total <= 24) return 2
+  return 3
+}
+
 function createActivityBuckets(bounds, view) {
   if (!bounds?.start || !bounds?.end) return []
+
+  if (view === 'month') {
+    return getRangeMonths(bounds).map(key => {
+      const date = new Date(`${key}-01T12:00:00`)
+      return {
+        key,
+        startKey: `${key}-01`,
+        endKey: `${key}-31`,
+        label: formatShortMonth(date),
+        subLabel: String(date.getFullYear()),
+        heading: formatFullMonth(date),
+        count: 0,
+        details: [],
+      }
+    })
+  }
 
   if (view === 'week') {
     const buckets = []
@@ -247,7 +321,9 @@ function buildActivityEntries(goals, bounds, view) {
       if (!Number.isFinite(stepTime)) continue
 
       let entry = null
-      if (view === 'week') {
+      if (view === 'month') {
+        entry = entries.find(item => item.key === dateKey.slice(0, 7)) || null
+      } else if (view === 'week') {
         const diffDays = Math.floor((stepTime - startTime) / MS_PER_DAY)
         const bucketIndex = Math.floor(diffDays / 7)
         entry = entries[bucketIndex] || null
@@ -266,19 +342,27 @@ function buildActivityEntries(goals, bounds, view) {
         id: `${goal.id}-${step.id}-${dateKey}`,
         title: step.title,
         goalTitle: goal.title,
-        timeLabel: view === 'week'
+        timeLabel: view === 'day'
+          ? exactTime
+            ? formatTimeLabel(exactTime)
+            : 'Без времени'
+          : view === 'week'
           ? exactTime
             ? `${formatDashboardDate(`${dateKey}T12:00:00`)} · ${formatTimeLabel(exactTime)}`
             : formatDashboardDate(`${dateKey}T12:00:00`)
           : exactTime
-            ? formatTimeLabel(exactTime)
-            : 'Без времени',
+            ? `${formatDashboardDate(`${dateKey}T12:00:00`)} · ${formatTimeLabel(exactTime)}`
+            : formatDashboardDate(`${dateKey}T12:00:00`),
         timeSort,
       })
     }
   }
 
-  return entries
+  const labelStep = getLabelStep(entries.length, view)
+  return entries.map((entry, index) => ({
+    ...entry,
+    showLabel: index % labelStep === 0 || index === entries.length - 1,
+  }))
 }
 
 function buildLastWeekStrip(now, completionKeys) {
@@ -304,7 +388,6 @@ function buildLastWeekStrip(now, completionKeys) {
 function Analytics({ goals, completedGoals, onClearHistory }) {
   const [range, setRange] = useState('month')
   const [activeActivityKey, setActiveActivityKey] = useState('')
-  const [isCoarsePointer, setIsCoarsePointer] = useState(false)
   const [activityView, setActivityView] = useState('day')
 
   const statGoals = useMemo(
@@ -374,25 +457,17 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
     [avgMicro, bestMicroDay, microProgress, microStreak]
   )
 
-  useEffect(() => {
-    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return undefined
-
-    const media = window.matchMedia('(hover: none), (pointer: coarse)')
-    const sync = () => setIsCoarsePointer(media.matches)
-
-    sync()
-    if (typeof media.addEventListener === 'function') {
-      media.addEventListener('change', sync)
-      return () => media.removeEventListener('change', sync)
-    }
-
-    media.addListener(sync)
-    return () => media.removeListener(sync)
-  }, [])
+  const availableActivityViews = useMemo(
+    () => ACTIVITY_VIEW_OPTIONS[range] || ACTIVITY_VIEW_OPTIONS.month,
+    [range]
+  )
 
   useEffect(() => {
-    setActivityView(range === 'year' || range === 'all' ? 'week' : 'day')
-  }, [range])
+    const defaultView =
+      range === 'all' ? 'month' : range === 'year' ? 'week' : 'day'
+    const allowedIds = availableActivityViews.map(option => option.id)
+    setActivityView(current => (allowedIds.includes(current) ? current : defaultView))
+  }, [availableActivityViews, range])
 
   useEffect(() => {
     if (activityEntries.length === 0) {
@@ -438,7 +513,39 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
   const hasAnyGoals = statGoals.length > 0
   const daysInRange = countDaysInclusive(rangeBounds)
   const avgValueLabel = daysInRange > 0 ? `${avgMicro.toFixed(1).replace('.', ',')} шага/день` : '—'
-  const activityModeLabel = activityView === 'week' ? 'По неделям' : 'По дням'
+  const activityModeLabel =
+    activityView === 'month' ? 'По месяцам' : activityView === 'week' ? 'По неделям' : 'По дням'
+  const activityTitle =
+    activityView === 'month' ? 'Активность по месяцам' : activityView === 'week' ? 'Активность по неделям' : 'Активность по дням'
+  const activityEmptyDetailText =
+    activityView === 'month'
+      ? 'За выбранный месяц пока нет завершённых шагов.'
+      : activityView === 'week'
+        ? 'За выбранную неделю пока нет завершённых шагов.'
+        : 'За выбранный день пока нет завершённых шагов.'
+  const activityChartStyle = {
+    '--activity-columns': String(Math.max(activityEntries.length, 1)),
+    '--activity-gap':
+      activityView === 'month'
+        ? '14px'
+        : activityView === 'week'
+          ? activityEntries.length > 24
+            ? '6px'
+            : '10px'
+          : activityEntries.length > 20
+            ? '6px'
+            : '8px',
+    '--activity-bar-width':
+      activityView === 'month'
+        ? '18px'
+        : activityView === 'week'
+          ? activityEntries.length > 24
+            ? '7px'
+            : '9px'
+          : activityEntries.length > 20
+            ? '8px'
+            : '10px',
+  }
 
   return (
     <section className="screen screen--journal journal-screen stats-screen">
@@ -539,19 +646,21 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
 
       <article className="card stats-panel stats-panel--activity">
         <div className="stats-card-head stats-card-head--activity">
-          <h2 className="stats-card-title">Активность {activityView === 'week' ? 'по неделям' : 'по дням'}</h2>
-          <div className="stats-view-toggle" role="tablist" aria-label="Детализация активности">
-            {ACTIVITY_VIEW_OPTIONS.map(option => (
-              <button
-                key={option.id}
-                type="button"
-                className={`stats-view-toggle-button ${activityView === option.id ? 'stats-view-toggle-button--active' : ''}`}
-                onClick={() => setActivityView(option.id)}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
+          <h2 className="stats-card-title">{activityTitle}</h2>
+          {availableActivityViews.length > 1 ? (
+            <div className="stats-view-toggle" role="tablist" aria-label="Детализация активности">
+              {availableActivityViews.map(option => (
+                <button
+                  key={option.id}
+                  type="button"
+                  className={`stats-view-toggle-button ${activityView === option.id ? 'stats-view-toggle-button--active' : ''}`}
+                  onClick={() => setActivityView(option.id)}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
         </div>
 
         {!hasDailyData ? (
@@ -580,7 +689,10 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
                       />
                     ))}
 
-                  <div className={`stats-activity-bars stats-activity-bars--${activityView}`}>
+                  <div
+                    className={`stats-activity-bars stats-activity-bars--${activityView}`}
+                    style={activityChartStyle}
+                  >
                     {activityEntries.map(item => {
                       const selected = item.key === activeActivityEntry?.key
                       const height = item.count > 0 ? `${(item.count / activityScale[0]) * 100}%` : '16px'
@@ -590,14 +702,15 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
                           key={item.key}
                           type="button"
                           className={`stats-activity-day ${selected ? 'stats-activity-day--selected' : ''} stats-activity-day--${activityView} ${item.count === 0 ? 'stats-activity-day--empty' : ''}`}
-                          onMouseEnter={() => {
-                            if (!isCoarsePointer) setActiveActivityKey(item.key)
-                          }}
+                          onMouseEnter={() => setActiveActivityKey(item.key)}
                           onFocus={() => setActiveActivityKey(item.key)}
                           onClick={() => setActiveActivityKey(item.key)}
                           aria-pressed={selected}
                         >
                           <div className="stats-activity-bar-wrap">
+                            {selected && item.count > 0 && (
+                              <span className="stats-activity-count-badge">{formatStepCount(item.count)}</span>
+                            )}
                             <span
                               className={`stats-activity-bar ${item.count === 0 ? 'stats-activity-bar--empty' : ''}`}
                               style={{ height }}
@@ -605,8 +718,8 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
                             />
                           </div>
                           <span className="stats-activity-label">
-                            <span className="stats-activity-date">{item.label}</span>
-                            {item.subLabel ? <span className="stats-activity-subdate">{item.subLabel}</span> : null}
+                            <span className="stats-activity-date">{item.showLabel ? item.label : ''}</span>
+                            {item.subLabel ? <span className="stats-activity-subdate">{item.showLabel ? item.subLabel : ''}</span> : null}
                           </span>
                         </button>
                       )
@@ -627,11 +740,7 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
               </div>
 
               {activeActivityDetails.length === 0 ? (
-                <p className="secondary-text stats-empty-text">
-                  {activityView === 'week'
-                    ? 'За выбранную неделю пока нет завершённых шагов.'
-                    : 'За выбранный день пока нет завершённых шагов.'}
-                </p>
+                <p className="secondary-text stats-empty-text">{activityEmptyDetailText}</p>
               ) : (
                 <div className="stats-activity-detail-list">
                   {activeActivityDetails.map(item => (
