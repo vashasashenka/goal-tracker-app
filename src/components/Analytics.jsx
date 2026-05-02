@@ -87,10 +87,19 @@ function getRangeBounds(range, goals, now = new Date()) {
   if (range === 'month') return { start: addDays(end, -29), end }
   if (range === 'year') return { start: addDays(end, -364), end }
 
-  const timestamps = goals
-    .map(goal => new Date(goal.completedAt || goal.createdAt).getTime())
-    .filter(value => Number.isFinite(value))
-    .sort((a, b) => a - b)
+  const timestamps = []
+  for (const goal of goals) {
+    const goalTime = new Date(goal.completedAt || goal.createdAt).getTime()
+    if (Number.isFinite(goalTime)) timestamps.push(goalTime)
+
+    for (const step of goal.steps || []) {
+      const activityKey = getMicroStepActivityDateKey(step)
+      if (!activityKey) continue
+      const stepTime = new Date(`${activityKey}T12:00:00`).getTime()
+      if (Number.isFinite(stepTime)) timestamps.push(stepTime)
+    }
+  }
+  timestamps.sort((a, b) => a - b)
 
   if (timestamps.length === 0) return { start: null, end: null }
   return {
@@ -112,7 +121,7 @@ function getRangeDates(bounds, limit = 500) {
   let cursor = new Date(bounds.start)
   let guard = 0
   while (cursor.getTime() <= bounds.end.getTime() && guard < limit) {
-    const key = cursor.toISOString().slice(0, 10)
+    const key = toLocalDateKey(cursor)
     dates.push(key)
     cursor.setDate(cursor.getDate() + 1)
     guard += 1
