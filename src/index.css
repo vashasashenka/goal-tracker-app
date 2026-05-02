@@ -3369,7 +3369,9 @@ small,
 }
 
 .task-modal-input {
-  min-height: 144px;
+  min-height: 96px;
+  max-height: 128px;
+  resize: vertical;
 }
 
 .task-modal-field {
@@ -3582,8 +3584,7 @@ small,
     top: 24px;
   }
 
-  .app-sidebar-top,
-  .app-sidebar-bottom {
+  .app-sidebar-top {
     display: grid;
     gap: 16px;
   }
@@ -3625,11 +3626,6 @@ small,
     border-color: rgba(47, 111, 237, 0.12);
     color: var(--accent);
     box-shadow: inset 0 0 0 1px rgba(47, 111, 237, 0.04);
-  }
-
-  .sidebar-nav-item--ghost {
-    background: rgba(248, 250, 255, 0.84);
-    border-color: rgba(214, 225, 243, 0.84);
   }
 
   .dashboard-main {

@@ -2455,16 +2455,6 @@ function App() {
             </nav>
           </div>
 
-          <div className="app-sidebar-bottom">
-            <button
-              type="button"
-              className={`sidebar-nav-item sidebar-nav-item--ghost ${showProfile ? 'sidebar-nav-item--active' : ''}`}
-              onClick={() => setShowProfile(true)}
-            >
-              <Gear size={20} weight={showProfile ? 'fill' : 'regular'} aria-hidden />
-              <span>Настройки</span>
-            </button>
-          </div>
         </aside>
 
         <div className="dashboard-main">
@@ -3338,6 +3328,7 @@ function App() {
             </div>
             <textarea
               className="big-input task-modal-input"
+              rows={4}
               value={taskDraft}
               onChange={e => setTaskDraft(e.target.value)}
               placeholder="Опишите шаг"
