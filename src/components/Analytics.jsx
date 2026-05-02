@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { CalendarBlank } from '@phosphor-icons/react'
+import { ArrowLeft, CalendarBlank, CaretRight } from '@phosphor-icons/react'
 import {
   countDaysInclusive,
   filterGoals,
@@ -34,6 +34,11 @@ const ACTIVITY_VIEW_OPTIONS = {
 const DOW_SHORT = ['ВС', 'ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ', 'СБ']
 const INSIGHT_ICONS = ['↗', '▥', '🔥']
 const MS_PER_DAY = 24 * 60 * 60 * 1000
+const ARCHIVE_FILTER_OPTIONS = [
+  { id: 'all', label: 'Все' },
+  { id: 'month', label: 'За месяц' },
+  { id: 'year', label: 'За год' },
+]
 
 function pluralize(count, forms) {
   const value = Math.abs(Math.trunc(Number(count) || 0))
@@ -385,10 +390,60 @@ function buildLastWeekStrip(now, completionKeys) {
   return out
 }
 
+function getGoalEmoji(category) {
+  if (category === 'Учёба') return '🎓'
+  if (category === 'Работа') return '💼'
+  if (category === 'Личное') return '🌿'
+  return '📘'
+}
+
+function getCompletedGoalSortTime(goal) {
+  const completedAt = goal?.completedAt ? new Date(goal.completedAt).getTime() : 0
+  if (Number.isFinite(completedAt) && completedAt > 0) return completedAt
+  const createdAt = goal?.createdAt ? new Date(goal.createdAt).getTime() : 0
+  return Number.isFinite(createdAt) ? createdAt : 0
+}
+
+function filterCompletedGoalsForArchive(goals, filterId) {
+  if (filterId === 'all') return goals
+
+  const now = startOfDay(new Date())
+  if (!now) return goals
+  const start = filterId === 'year' ? addDays(now, -364) : addDays(now, -29)
+  if (!start) return goals
+
+  return goals.filter(goal => {
+    const time = getCompletedGoalSortTime(goal)
+    return time >= start.getTime()
+  })
+}
+
+function formatStepTimeForJournal(step) {
+  const rawCompleted = String(step?.completedAt || '').trim()
+  if (rawCompleted) {
+    return `${formatDashboardDate(rawCompleted)} · ${formatTimeLabel(rawCompleted)}`
+  }
+  if (step?.recommendedDate) {
+    return formatDashboardDate(`${step.recommendedDate}T12:00:00`)
+  }
+  return 'Без даты'
+}
+
+function getGoalDurationDays(goal) {
+  const start = startOfDay(goal?.createdAt)
+  const end = startOfDay(goal?.completedAt)
+  if (!start || !end) return null
+  return Math.max(1, Math.round((end.getTime() - start.getTime()) / MS_PER_DAY) + 1)
+}
+
 function Analytics({ goals, completedGoals, onClearHistory }) {
   const [range, setRange] = useState('month')
   const [activeActivityKey, setActiveActivityKey] = useState('')
   const [activityView, setActivityView] = useState('day')
+  const [screenMode, setScreenMode] = useState('stats')
+  const [selectedCompletedGoalId, setSelectedCompletedGoalId] = useState('')
+  const [detailBackTarget, setDetailBackTarget] = useState('stats')
+  const [archiveFilter, setArchiveFilter] = useState('all')
 
   const statGoals = useMemo(
     () => [
@@ -396,6 +451,13 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
       ...completedGoals.map(goal => normalizeGoalForStats(goal, { completed: true })),
     ],
     [goals, completedGoals]
+  )
+  const completedGoalArchive = useMemo(
+    () =>
+      completedGoals
+        .map(goal => normalizeGoalForStats(goal, { completed: true }))
+        .sort((a, b) => getCompletedGoalSortTime(b) - getCompletedGoalSortTime(a)),
+    [completedGoals]
   )
 
   const filteredGoals = useMemo(() => filterGoals(statGoals, range), [statGoals, range])
@@ -488,6 +550,14 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
     () => activityEntries.find(item => item.key === activeActivityKey) || null,
     [activityEntries, activeActivityKey]
   )
+  const selectedCompletedGoal = useMemo(
+    () => completedGoalArchive.find(goal => goal.id === selectedCompletedGoalId) || null,
+    [completedGoalArchive, selectedCompletedGoalId]
+  )
+  const filteredCompletedGoalArchive = useMemo(
+    () => filterCompletedGoalsForArchive(completedGoalArchive, archiveFilter),
+    [archiveFilter, completedGoalArchive]
+  )
 
   const activeActivityDetails = useMemo(
     () =>
@@ -508,6 +578,8 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
     ? (latestCompletedGoal.steps || []).filter(step => step.completed).length
     : 0
   const latestCompletedTotal = latestCompletedGoal?.steps?.length || 0
+  const selectedCompletedGoalCount = selectedCompletedGoal?.steps?.filter(step => step.completed).length || 0
+  const selectedCompletedGoalDuration = selectedCompletedGoal ? getGoalDurationDays(selectedCompletedGoal) : null
 
   const hasDailyData = activityEntries.some(item => item.count > 0)
   const hasAnyGoals = statGoals.length > 0
@@ -545,6 +617,198 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
           : activityEntries.length > 20
             ? '8px'
             : '10px',
+  }
+
+  useEffect(() => {
+    if (screenMode !== 'detail') return
+    if (selectedCompletedGoal) return
+    setScreenMode(detailBackTarget === 'archive' ? 'archive' : 'stats')
+  }, [detailBackTarget, screenMode, selectedCompletedGoal])
+
+  function openCompletedGoal(goalId, backTarget = 'stats') {
+    if (!goalId) return
+    setSelectedCompletedGoalId(goalId)
+    setDetailBackTarget(backTarget)
+    setScreenMode('detail')
+  }
+
+  if (screenMode === 'detail' && selectedCompletedGoal) {
+    return (
+      <section className="screen screen--journal journal-screen goal-journal-screen">
+        <header className="screen-header">
+          <button
+            type="button"
+            className="text-button text-button--with-icon"
+            onClick={() => setScreenMode(detailBackTarget === 'archive' ? 'archive' : 'stats')}
+          >
+            <ArrowLeft size={18} weight="regular" aria-hidden />
+            Назад
+          </button>
+          <div className="screen-header-copy">
+            <h1 className="screen-title-with-icon">
+              <span aria-hidden="true">{getGoalEmoji(selectedCompletedGoal.category)}</span>
+              <span>Журнал цели</span>
+            </h1>
+            <p className="secondary-text journal-subtitle">Просмотр завершённой цели</p>
+          </div>
+          <div />
+        </header>
+
+        <article className="card goal-journal-hero">
+          <div className="goal-journal-hero-head">
+            <div className="goal-journal-title-row">
+              <span className="goal-journal-emoji" aria-hidden="true">
+                {getGoalEmoji(selectedCompletedGoal.category)}
+              </span>
+              <div>
+                <h2 className="goal-journal-title">{selectedCompletedGoal.title}</h2>
+                <p className="secondary-text goal-journal-meta">
+                  Завершено: {formatDashboardDate(selectedCompletedGoal.completedAt)}
+                </p>
+              </div>
+            </div>
+            <span className="goal-journal-status">Завершено</span>
+          </div>
+
+          <div className="goal-journal-progress-head">
+            <span>Общий прогресс</span>
+            <strong>100%</strong>
+          </div>
+          <div className="goal-journal-progress-track" aria-hidden="true">
+            <span style={{ width: '100%' }} />
+          </div>
+          <p className="secondary-text goal-journal-progress-copy">
+            Выполнено {selectedCompletedGoalCount} из {selectedCompletedGoal.steps.length} шагов
+          </p>
+        </article>
+
+        <section className="goal-journal-section">
+          <h2 className="journal-section-title journal-section-title--inline">Выполненные микрошаги</h2>
+          <div className="goal-journal-step-list">
+            {selectedCompletedGoal.steps.map(step => (
+              <article key={step.id} className="goal-journal-step-row">
+                <span className="goal-journal-step-check" aria-hidden="true">
+                  ✓
+                </span>
+                <div className="goal-journal-step-main">
+                  <strong>{step.title}</strong>
+                </div>
+                <span className="goal-journal-step-time">{formatStepTimeForJournal(step)}</span>
+              </article>
+            ))}
+          </div>
+        </section>
+
+        <section className="goal-journal-section">
+          <h2 className="journal-section-title journal-section-title--inline">Итоги</h2>
+          <div className="goal-journal-summary-grid">
+            <article className="card goal-journal-summary-card">
+              <span className="goal-journal-summary-label">Начато</span>
+              <strong>{formatDashboardDate(selectedCompletedGoal.createdAt)}</strong>
+            </article>
+            <article className="card goal-journal-summary-card">
+              <span className="goal-journal-summary-label">Завершено</span>
+              <strong>{formatDashboardDate(selectedCompletedGoal.completedAt)}</strong>
+            </article>
+            <article className="card goal-journal-summary-card">
+              <span className="goal-journal-summary-label">Длительность</span>
+              <strong>
+                {selectedCompletedGoalDuration
+                  ? `${selectedCompletedGoalDuration} ${pluralize(selectedCompletedGoalDuration, ['день', 'дня', 'дней'])}`
+                  : '—'}
+              </strong>
+            </article>
+          </div>
+        </section>
+      </section>
+    )
+  }
+
+  if (screenMode === 'archive') {
+    return (
+      <section className="screen screen--journal journal-screen completed-goals-screen">
+        <header className="screen-header">
+          <button
+            type="button"
+            className="text-button text-button--with-icon"
+            onClick={() => setScreenMode('stats')}
+          >
+            <ArrowLeft size={18} weight="regular" aria-hidden />
+            Назад
+          </button>
+          <div className="screen-header-copy">
+            <h1 className="screen-title-with-icon">
+              <span aria-hidden="true">🏆</span>
+              <span>Завершённые цели</span>
+            </h1>
+            <p className="secondary-text journal-subtitle">Все ваши завершённые цели</p>
+          </div>
+          <div />
+        </header>
+
+        <div className="completed-goals-filter-row" role="tablist" aria-label="Фильтр завершённых целей">
+          {ARCHIVE_FILTER_OPTIONS.map(option => (
+            <button
+              key={option.id}
+              type="button"
+              className={`stats-filter-chip ${archiveFilter === option.id ? 'stats-filter-chip--active' : ''}`}
+              onClick={() => setArchiveFilter(option.id)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+
+        {filteredCompletedGoalArchive.length === 0 ? (
+          <div className="stats-empty-block goal-archive-empty">
+            <strong>Пока нет завершённых целей</strong>
+            <p className="secondary-text">Когда вы завершите первую цель, она появится здесь.</p>
+          </div>
+        ) : (
+          <div className="completed-goals-list">
+            {filteredCompletedGoalArchive.map(goal => {
+              const stepCount = goal.steps.length
+              return (
+                <button
+                  key={goal.id}
+                  type="button"
+                  className="completed-goal-row"
+                  onClick={() => openCompletedGoal(goal.id, 'archive')}
+                >
+                  <span className="completed-goal-row-icon" aria-hidden="true">
+                    {getGoalEmoji(goal.category)}
+                  </span>
+                  <span className="completed-goal-row-main">
+                    <strong>{goal.title}</strong>
+                    <span className="secondary-text">
+                      {stepCount} {pluralize(stepCount, ['шаг', 'шага', 'шагов'])} · завершено{' '}
+                      {formatDashboardDate(goal.completedAt)}
+                    </span>
+                  </span>
+                  <span className="completed-goal-row-side">
+                    <strong>100%</strong>
+                    <span className="completed-goal-row-progress" aria-hidden="true">
+                      <span />
+                    </span>
+                  </span>
+                  <CaretRight size={18} weight="bold" aria-hidden />
+                </button>
+              )
+            })}
+          </div>
+        )}
+
+        {completedGoalArchive.length > 0 ? (
+          <article className="card completed-goals-celebration">
+            <strong>Отличная работа!</strong>
+            <p className="secondary-text">
+              Вы завершили {completedGoalArchive.length}{' '}
+              {pluralize(completedGoalArchive.length, ['цель', 'цели', 'целей'])}. Продолжайте в том же духе.
+            </p>
+          </article>
+        ) : null}
+      </section>
+    )
   }
 
   return (
@@ -777,7 +1041,7 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
             <>
               <div className="stats-feature-goal">
                 <span className="stats-feature-icon" aria-hidden="true">
-                  📘
+                  {getGoalEmoji(latestCompletedGoal.category)}
                 </span>
                 <div className="stats-feature-main">
                   <strong>{latestCompletedGoal.title}</strong>
@@ -786,10 +1050,22 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
                     {formatDashboardDate(latestCompletedGoal.completedAt)}
                   </p>
                 </div>
-                <span className="stats-feature-cta">Открыть журнал</span>
+                <button
+                  type="button"
+                  className="stats-feature-cta"
+                  onClick={() => openCompletedGoal(latestCompletedGoal.id, 'stats')}
+                >
+                  Открыть журнал
+                </button>
               </div>
 
-              <span className="stats-view-link">Смотреть все завершённые цели</span>
+              <button
+                type="button"
+                className="text-button stats-view-link"
+                onClick={() => setScreenMode('archive')}
+              >
+                Смотреть все завершённые цели
+              </button>
             </>
           )}
 
