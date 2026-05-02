@@ -2258,7 +2258,7 @@ function App() {
           <div className="agenda-layout">
             <div className="agenda-column agenda-column--main">
               <div className="section-heading-row">
-                <h2>{safeGoals.length > 1 ? 'Текущие цели' : 'Моя основная цель'}</h2>
+                <h2>{safeGoals.length > 1 ? 'Мои цели' : 'Моя цель'}</h2>
                 {safeGoals.length > 1 && activeGoal && (
                   <span className="goal-pill" aria-live="polite">
                     {safeGoals.findIndex(g => g.id === activeGoal.id) + 1} / {safeGoals.length}
@@ -2330,14 +2330,6 @@ function App() {
                         </span>
                         <p className="goal-hero-title">{activeGoal.text}</p>
                       </div>
-                      {safeGoals.length <= 1 && (
-                        <p className="secondary-text goal-hero-hint goal-hero-hint--with-icon">
-                          <Sparkle size={15} weight="fill" aria-hidden />
-                          <span>
-                            Добавьте вторую цель в разделе «Генерация» — появятся стрелки для переключения.
-                          </span>
-                        </p>
-                      )}
                     </div>
                     {safeGoals.length > 1 && (
                       <div className="goal-hero-arrows" role="group" aria-label="Переключение цели">
@@ -2401,10 +2393,7 @@ function App() {
               )}
 
               <div ref={agendaTasksRef} />
-              <h2 className="section-h2-tight">Микрошаги</h2>
-              {activeGoal && (
-                <p className="secondary-text section-subline">под цель «{activeGoal.text}»</p>
-              )}
+              <h2 className="section-h2-tight">Шаги</h2>
               {activeGoal && (
                 <button
                   type="button"
@@ -2527,10 +2516,8 @@ function App() {
             </div>
 
             <aside className="agenda-column agenda-column--side">
-              <h2 className="section-h2-tight">Рекомендации ассистента</h2>
-              {activeGoal && (
-                <p className="secondary-text section-subline">под цель «{activeGoal.text}»</p>
-              )}
+              <h2 className="section-h2-tight">Рекомендации</h2>
+              <p className="secondary-text section-subline">Идеи шагов для вашей цели</p>
               <div className="recommendations-row">
                 {agendaRecommendations.length === 0 ? (
                   <p className="secondary-text">
@@ -2624,73 +2611,81 @@ function App() {
               <ArrowLeft size={18} weight="regular" aria-hidden />
               Назад
             </button>
-            <h1>{showGeneratedResult ? 'Результат' : 'Генерация'}</h1>
+            <div className="screen-header-copy screen-header-copy--generation">
+              <h1 className="screen-title-with-icon">
+                <Sparkle size={18} weight="fill" aria-hidden />
+                <span>{showGeneratedResult ? 'Результат' : 'Генерация'}</span>
+              </h1>
+              <p className="secondary-text generation-screen-copy">
+                {showGeneratedResult
+                  ? 'Добавляйте шаги по одному и сразу планируйте дату.'
+                  : 'Опишите цель, и мы предложим стартовые шаги.'}
+              </p>
+            </div>
             <div />
           </header>
 
           {!showGeneratedResult && (
             <>
-              <div className="empty-space" />
-              <h2 className="center-title">Что нужно разбить на микрошаги?</h2>
-              <div className="generation-form-card">
-                <textarea
-                  ref={generationInputRef}
-                  className="big-input"
-                  maxLength={GENERATION_INPUT_LIMIT}
-                  value={generationInput}
-                  onChange={e => setGenerationInput(e.target.value)}
-                  placeholder="Напишите цель или задачу, которую хотите разложить на шаги"
-                />
-                <div className="generation-input-meta">
-                  <span className="secondary-text">Чем конкретнее цель, тем полезнее будут шаги</span>
-                  <span className="secondary-text">
-                    {generationInput.length} / {GENERATION_INPUT_LIMIT}
-                  </span>
+              <div className="generation-home-grid">
+                <div className="generation-home-main">
+                  <div className="empty-space" />
+                  <h2 className="center-title generation-main-title">Что нужно разбить на шаги?</h2>
+                  <div className="generation-form-card">
+                    <label htmlFor="generation-input" className="generation-label">
+                      Опишите вашу цель или задачу
+                    </label>
+                    <textarea
+                      ref={generationInputRef}
+                      id="generation-input"
+                      className="big-input"
+                      maxLength={GENERATION_INPUT_LIMIT}
+                      value={generationInput}
+                      onChange={e => setGenerationInput(e.target.value)}
+                      placeholder="Напишите цель или задачу, которую хотите достичь..."
+                    />
+                    <div className="generation-input-meta">
+                      <span className="secondary-text" />
+                      <span className="secondary-text">
+                        {generationInput.length} / {GENERATION_INPUT_LIMIT}
+                      </span>
+                    </div>
+                    <div className="generation-examples-block">
+                      <span className="generation-label generation-label--muted">Примеры целей</span>
+                      <div className="generation-example-row">
+                        {GENERATION_EXAMPLES.map(example => (
+                          <button
+                            key={example}
+                            type="button"
+                            className="generation-example-chip"
+                            onClick={() => {
+                              setGenerationInput(example)
+                              setShowGeneratedResult(false)
+                            }}
+                          >
+                            {example}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                  {(activeGoal || generationInput.trim()) && (
+                    <p className="secondary-text generation-goal-hint">
+                      Шаги добавятся к существующей цели или создадут новую
+                    </p>
+                  )}
+                  <p className="secondary-text generation-inline-note">Генерируем 3 стартовых шага для цели</p>
+                  <button
+                    className="primary-button"
+                    disabled={isGenerating || !generationInput.trim()}
+                    onClick={() => handleGenerate()}
+                  >
+                    {isGenerating ? 'Создаём план…' : 'Сгенерировать шаги'}
+                  </button>
                 </div>
-                <div className="generation-example-row">
-                  {GENERATION_EXAMPLES.map(example => (
-                    <button
-                      key={example}
-                      type="button"
-                      className="generation-example-chip"
-                      onClick={() => {
-                        setGenerationInput(example)
-                        setShowGeneratedResult(false)
-                      }}
-                    >
-                      {example}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              {activeGoal && (
-                <p className="secondary-text generation-goal-hint">
-                  {!generationInput.trim()
-                    ? `Если тема совпадёт с «${activeGoal.text}», шаги добавятся к ней; иначе появится новая цель.`
-                    : goalTitlesAlign(generationInput.trim(), activeGoal.text)
-                      ? `Микрошаги добавятся к текущей цели «${activeGoal.text}».`
-                      : `Будет отдельная цель «${generationInput.trim()}» (не «${activeGoal.text}»).`}
-                </p>
-              )}
-              <button
-                className="primary-button"
-                disabled={isGenerating || !generationInput.trim()}
-                onClick={() => handleGenerate()}
-              >
-                {isGenerating ? 'Создаём план…' : 'Сгенерировать'}
-              </button>
-
-              <section className="generation-help">
-                <h3 className="generation-help-title">Как это работает</h3>
-                <div className="generation-help-body">
-                  <p>1. Ты описываешь цель в одном поле.</p>
-                  <p>2. Ассистент генерирует 3 стартовых микрошагa.</p>
-                  <p>3. Шаги сразу попадают в повестку текущей или новой цели.</p>
-                </div>
-              </section>
 
               {recentGenerations.length > 0 && (
-                <section className="recent-generations">
+                <aside className="recent-generations recent-generations--compact">
                   <div className="section-heading-row">
                     <h2>Недавние генерации</h2>
                   </div>
@@ -2729,8 +2724,9 @@ function App() {
                       </article>
                     ))}
                   </div>
-                </section>
+                </aside>
               )}
+              </div>
             </>
           )}
 
@@ -2909,7 +2905,7 @@ function App() {
           <header className="screen-header">
             <button type="button" className="text-button text-button--with-icon" onClick={() => setShowProfile(false)}>
               <ArrowLeft size={18} weight="regular" aria-hidden />
-              Повестка
+              План
             </button>
             <h1>Настройки</h1>
             <div />
@@ -2939,7 +2935,7 @@ function App() {
           >
             <span className="tab-bar-inner">
               <ListBullets size={22} weight={activeTab === 'agenda' ? 'fill' : 'regular'} aria-hidden />
-              <span>Повестка</span>
+              <span>План</span>
             </span>
           </button>
           <button
