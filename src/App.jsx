@@ -2951,13 +2951,59 @@ function App() {
                                 </button>
 
                                 <div className="task-card-body">
-                                  <div className="task-card-meta">
-                                    <span className={`task-status-pill task-status-pill--${visualTone}`}>
-                                      <span
-                                        className={`task-card-priority-dot task-card-priority-dot--${visualTone}`}
-                                        aria-hidden="true"
-                                      />
-                                    </span>
+                                  <div className="task-card-content-row">
+                                    <button
+                                      type="button"
+                                      className="task-card-text-button"
+                                      onClick={() => startInlineTaskEdit(task)}
+                                    >
+                                      {inlineEditTaskId === task.id ? (
+                                        <span className="task-inline-edit">
+                                          <input
+                                            type="text"
+                                            className="task-inline-input"
+                                            value={inlineEditText}
+                                            onChange={e => setInlineEditText(e.target.value)}
+                                            autoFocus
+                                            onKeyDown={e => {
+                                              if (e.key === 'Enter') {
+                                                e.preventDefault()
+                                                saveInlineTaskEdit(activeGoal.id, task.id)
+                                              } else if (e.key === 'Escape') {
+                                                e.preventDefault()
+                                                cancelInlineTaskEdit()
+                                              }
+                                            }}
+                                          />
+                                          <span className="task-inline-actions">
+                                            <button
+                                              type="button"
+                                              className="text-button task-inline-action"
+                                              disabled={inlineEditBusy || !inlineEditText.trim()}
+                                              onClick={e => {
+                                                e.stopPropagation()
+                                                saveInlineTaskEdit(activeGoal.id, task.id)
+                                              }}
+                                            >
+                                              Сохранить
+                                            </button>
+                                            <button
+                                              type="button"
+                                              className="text-button task-inline-action task-inline-action--muted"
+                                              disabled={inlineEditBusy}
+                                              onClick={e => {
+                                                e.stopPropagation()
+                                                cancelInlineTaskEdit()
+                                              }}
+                                            >
+                                              Отмена
+                                            </button>
+                                          </span>
+                                        </span>
+                                      ) : (
+                                        <strong>{task.text}</strong>
+                                      )}
+                                    </button>
 
                                     {task.completed ? (
                                       <span className="task-date-badge task-date-badge--done">
@@ -2986,59 +3032,6 @@ function App() {
                                       </button>
                                     )}
                                   </div>
-
-                                  <button
-                                    type="button"
-                                    className="task-card-text-button"
-                                    onClick={() => startInlineTaskEdit(task)}
-                                  >
-                                    {inlineEditTaskId === task.id ? (
-                                      <span className="task-inline-edit">
-                                        <input
-                                          type="text"
-                                          className="task-inline-input"
-                                          value={inlineEditText}
-                                          onChange={e => setInlineEditText(e.target.value)}
-                                          autoFocus
-                                          onKeyDown={e => {
-                                            if (e.key === 'Enter') {
-                                              e.preventDefault()
-                                              saveInlineTaskEdit(activeGoal.id, task.id)
-                                            } else if (e.key === 'Escape') {
-                                              e.preventDefault()
-                                              cancelInlineTaskEdit()
-                                            }
-                                          }}
-                                        />
-                                        <span className="task-inline-actions">
-                                          <button
-                                            type="button"
-                                            className="text-button task-inline-action"
-                                            disabled={inlineEditBusy || !inlineEditText.trim()}
-                                            onClick={e => {
-                                              e.stopPropagation()
-                                              saveInlineTaskEdit(activeGoal.id, task.id)
-                                            }}
-                                          >
-                                            Сохранить
-                                          </button>
-                                          <button
-                                            type="button"
-                                            className="text-button task-inline-action task-inline-action--muted"
-                                            disabled={inlineEditBusy}
-                                            onClick={e => {
-                                              e.stopPropagation()
-                                              cancelInlineTaskEdit()
-                                            }}
-                                          >
-                                            Отмена
-                                          </button>
-                                        </span>
-                                      </span>
-                                    ) : (
-                                      <strong>{task.text}</strong>
-                                    )}
-                                  </button>
                                 </div>
                               </div>
 
