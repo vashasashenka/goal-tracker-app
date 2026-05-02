@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeft,
+  Bell,
   Briefcase,
   CalendarBlank,
-  CaretLeft,
+  CaretDown,
   CaretRight,
   ChartBar,
   Database,
@@ -330,6 +331,15 @@ function getAgendaTaskTone(task, todayKey) {
   return 'planned'
 }
 
+function getAgendaTaskLabel(task, todayKey) {
+  if (task?.completed) return 'Выполнено'
+  const dateKey = normalizeIsoDate(task?.recommendedDate)
+  if (!dateKey) return 'Без даты'
+  if (dateKey < todayKey) return 'Просрочено'
+  if (dateKey === todayKey) return 'Сегодня'
+  return 'Запланировано'
+}
+
 function GoalCategoryIcon({ category, size = 22 }) {
   const p = { size, weight: 'regular', 'aria-hidden': true }
   if (category === 'Учёба') return <GraduationCap {...p} />
@@ -566,9 +576,15 @@ function App() {
   const [inlineEditBusy, setInlineEditBusy] = useState(false)
   const [recommendationsCache, setRecommendationsCache] = useState({})
   const [highlightedTaskIds, setHighlightedTaskIds] = useState([])
+  const [showGoalMenu, setShowGoalMenu] = useState(false)
+  const [showNotifications, setShowNotifications] = useState(false)
+  const [selectedRecommendationId, setSelectedRecommendationId] = useState(null)
   const generatedDateInputRef = useRef(null)
   const generationInputRef = useRef(null)
   const agendaTasksRef = useRef(null)
+  const recommendationsRef = useRef(null)
+  const goalMenuRef = useRef(null)
+  const notificationsRef = useRef(null)
 
   const normalizedUserEmail = normalizeEmail(userEmail)
   const sessionToken = String(authToken || '').trim()
@@ -873,22 +889,22 @@ function App() {
       {
         id: 'today',
         title: 'Сегодня',
-        description: 'Ближайшие и просроченные шаги',
+        tone: 'today',
         items: groups.today,
       },
       {
         id: 'planned',
         title: 'Запланировано',
-        description: 'Шаги на следующие дни',
+        tone: 'planned',
         items: groups.planned,
       },
       {
         id: 'completed',
         title: 'Выполнено',
-        description: 'То, что уже закрыто',
+        tone: 'completed',
         items: groups.completed,
       },
-    ].filter(section => section.items.length > 0)
+    ]
   }, [agendaMicroTasks])
 
   const activeGoalProgress = useMemo(() => {
@@ -908,9 +924,114 @@ function App() {
     return (Array.isArray(recommendations) ? recommendations : []).slice(0, AI_SUGGEST_SLOTS)
   }, [activeGoal?.text, recommendations, recommendationsSource])
 
+  const selectedRecommendation = useMemo(() => {
+    if (!selectedRecommendationId) return null
+    return agendaRecommendations.find(item => item.id === selectedRecommendationId) || null
+  }, [agendaRecommendations, selectedRecommendationId])
+
+  const agendaNotifications = useMemo(() => {
+    if (!activeGoal) return []
+
+    const todayKey = toIsoDate(new Date())
+    const overdueItems = agendaMicroTasks
+      .filter(task => getAgendaTaskTone(task, todayKey) === 'overdue')
+      .slice(0, 3)
+      .map(task => ({
+        id: `overdue-${task.id}`,
+        type: 'task',
+        tone: 'overdue',
+        title: 'Просроченный шаг',
+        text: task.text,
+        taskId: task.id,
+      }))
+
+    const todayItems = agendaMicroTasks
+      .filter(task => getAgendaTaskTone(task, todayKey) === 'today')
+      .slice(0, 3)
+      .map(task => ({
+        id: `today-${task.id}`,
+        type: 'task',
+        tone: 'today',
+        title: 'Шаг на сегодня',
+        text: task.text,
+        taskId: task.id,
+      }))
+
+    const suggestionItems =
+      agendaRecommendations.length > 0
+        ? [
+            {
+              id: `recommendations-${activeGoal.id}`,
+              type: 'recommendation',
+              tone: 'planned',
+              title: 'Есть новые рекомендации',
+              text: `Для цели «${activeGoal.text}» есть ${agendaRecommendations.length} новых шагов`,
+            },
+          ]
+        : []
+
+    return [...overdueItems, ...todayItems, ...suggestionItems]
+  }, [activeGoal, agendaMicroTasks, agendaRecommendations])
+
+  const userInitial = String(userName || userEmail || 'П')
+    .trim()
+    .charAt(0)
+    .toUpperCase()
+
+  useEffect(() => {
+    function handlePointerDown(event) {
+      if (showGoalMenu && goalMenuRef.current && !goalMenuRef.current.contains(event.target)) {
+        setShowGoalMenu(false)
+      }
+      if (showNotifications && notificationsRef.current && !notificationsRef.current.contains(event.target)) {
+        setShowNotifications(false)
+      }
+    }
+
+    function handleEscape(event) {
+      if (event.key === 'Escape') {
+        setShowGoalMenu(false)
+        setShowNotifications(false)
+        setSelectedRecommendationId(null)
+      }
+    }
+
+    document.addEventListener('mousedown', handlePointerDown)
+    document.addEventListener('keydown', handleEscape)
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown)
+      document.removeEventListener('keydown', handleEscape)
+    }
+  }, [showGoalMenu, showNotifications])
+
+  useEffect(() => {
+    setShowGoalMenu(false)
+    setShowNotifications(false)
+    setSelectedRecommendationId(null)
+  }, [activeTab, showProfile, activeGoalId])
+
+  useEffect(() => {
+    if (!selectedRecommendationId) return
+    if (!selectedRecommendation) {
+      setSelectedRecommendationId(null)
+    }
+  }, [selectedRecommendationId, selectedRecommendation])
+
   function setCurrentGoal(goalId) {
     setActiveGoalId(goalId)
     localStorage.setItem(activeGoalStorageKey, String(goalId))
+    setRecommendations([])
+    setShowGoalMenu(false)
+    setSelectedRecommendationId(null)
+  }
+
+  function openNewGoalFlow() {
+    beginNewGoalGeneration()
+    setShowGoalMenu(false)
+    setShowNotifications(false)
+    setSelectedRecommendationId(null)
+    setActiveTab('generate')
+    setShowProfile(false)
   }
 
   function replaceGoalInState(nextGoal) {
@@ -942,18 +1063,16 @@ function App() {
     setHighlightedTaskIds(uniqueIds)
   }
 
-  function switchActiveGoal(delta) {
-    if (safeGoals.length <= 1) return
-    const idx = safeGoals.findIndex(g => g.id === activeGoalId)
-    if (idx === -1) return
-    const len = safeGoals.length
-    const nextIdx = (idx + delta + len) % len
-    const nextGoal = safeGoals[nextIdx]
-    setCurrentGoal(nextGoal.id)
-    setRecommendations([])
+  function handleNotificationSelect(item) {
+    if (!item) return
+    if (item.type === 'recommendation') {
+      recommendationsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    } else if (item.taskId) {
+      highlightAgendaTasks([item.taskId])
+      agendaTasksRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+    setShowNotifications(false)
   }
-
-  const goalSwipe = useRef({ x: null })
 
   const utilization = useMemo(() => {
     const count = agendaMicroTasks.length
@@ -992,6 +1111,8 @@ function App() {
       normalizeIsoDate(task?.recommendedDate) ||
       inferRecommendedDate(checkpointOrder, goal?.microGoals || [])
 
+    setShowGoalMenu(false)
+    setShowNotifications(false)
     setTaskEditor({
       goalId,
       taskId: task?.id ?? null,
@@ -1403,6 +1524,7 @@ function App() {
       const saved = await updateGoalLocally(updatedGoal)
       replaceGoalInState(saved)
       highlightAgendaTasks([nextMicroGoal.id])
+      setSelectedRecommendationId(null)
       await refillRecommendationSlotInPlace(item.id, saved)
     } catch (error) {
       console.error('Рекомендация в план:', error)
@@ -1540,6 +1662,7 @@ function App() {
     closeGeneratedDateEditor()
     setIsAddingOwnStep(false)
     setAiError('')
+    setSelectedRecommendationId(null)
   }
 
   function updateGeneratedStepDate(stepId, nextDate) {
@@ -2411,80 +2534,177 @@ function App() {
       {!isOnline && <div className="banner-error">Нет соединения. Работаем офлайн</div>}
       {aiError && <div className="banner-error">{aiError}</div>}
 
+      <div className="dashboard-shell">
+        <aside className="app-sidebar" aria-label="Навигация">
+          <div className="app-sidebar-top">
+            <button
+              type="button"
+              className="sidebar-brand"
+              onClick={() => {
+                setShowProfile(false)
+                setActiveTab('agenda')
+              }}
+            >
+              Goal Tracker
+            </button>
+
+            <nav className="sidebar-nav">
+              <button
+                type="button"
+                className={`sidebar-nav-item ${!showProfile && activeTab === 'agenda' ? 'sidebar-nav-item--active' : ''}`}
+                onClick={() => {
+                  setShowProfile(false)
+                  setActiveTab('agenda')
+                }}
+              >
+                <ListBullets size={20} weight={!showProfile && activeTab === 'agenda' ? 'fill' : 'regular'} aria-hidden />
+                <span>План</span>
+              </button>
+              <button
+                type="button"
+                className={`sidebar-nav-item ${!showProfile && activeTab === 'generate' ? 'sidebar-nav-item--active' : ''}`}
+                onClick={() => {
+                  setShowProfile(false)
+                  setActiveTab('generate')
+                }}
+              >
+                <Sparkle size={20} weight={!showProfile && activeTab === 'generate' ? 'fill' : 'regular'} aria-hidden />
+                <span>Генерация</span>
+              </button>
+              <button
+                type="button"
+                className={`sidebar-nav-item ${!showProfile && activeTab === 'journal' ? 'sidebar-nav-item--active' : ''}`}
+                onClick={() => {
+                  setShowProfile(false)
+                  setActiveTab('journal')
+                }}
+              >
+                <ChartBar size={20} weight={!showProfile && activeTab === 'journal' ? 'fill' : 'regular'} aria-hidden />
+                <span>Статистика</span>
+              </button>
+            </nav>
+          </div>
+
+          <div className="app-sidebar-bottom">
+            <button
+              type="button"
+              className={`sidebar-nav-item sidebar-nav-item--ghost ${showProfile ? 'sidebar-nav-item--active' : ''}`}
+              onClick={() => setShowProfile(true)}
+            >
+              <Gear size={20} weight={showProfile ? 'fill' : 'regular'} aria-hidden />
+              <span>Настройки</span>
+            </button>
+
+            <button type="button" className="sidebar-user-card" onClick={() => setShowProfile(true)}>
+              <span className="sidebar-user-avatar" aria-hidden="true">
+                {userInitial || 'П'}
+              </span>
+              <span className="sidebar-user-meta">
+                <strong>{userName || 'Профиль'}</strong>
+                <span>{userEmail || 'Без почты'}</span>
+              </span>
+              <CaretDown size={16} weight="bold" aria-hidden />
+            </button>
+          </div>
+        </aside>
+
+        <div className="dashboard-main">
       {!showProfile && activeTab === 'agenda' && (
         <section className="screen screen--agenda">
-          <header className="screen-header">
-            <div>
-              <h1>{today}</h1>
-              <small className="screen-header-sub">
+          <header className="screen-header screen-header--agenda">
+            <div className="screen-header-copy">
+              <h1>План</h1>
+              <small className="screen-header-sub screen-header-sub--agenda">
+                <span>{today}</span>
+                <span className="screen-header-separator">·</span>
                 <Lightning size={15} weight="fill" aria-hidden />
-                {utilization}
+                <span>{utilization} продуктивность</span>
               </small>
             </div>
-            <button type="button" className="icon-button" onClick={() => setShowProfile(true)} aria-label="Настройки">
-              <Gear size={20} weight="regular" aria-hidden />
-            </button>
+            <div className="agenda-header-actions">
+              <button
+                type="button"
+                className="agenda-create-goal-button"
+                onClick={openNewGoalFlow}
+                aria-label="Новая цель"
+              >
+                <Plus size={18} weight="bold" aria-hidden />
+                <span className="agenda-create-goal-button-label">Новая цель</span>
+              </button>
+
+              <div className="notification-shell" ref={notificationsRef}>
+                <button
+                  type="button"
+                  className="icon-button notification-button"
+                  onClick={() => {
+                    setShowNotifications(prev => !prev)
+                    setShowGoalMenu(false)
+                  }}
+                  aria-label="Уведомления"
+                >
+                  <Bell size={20} weight="regular" aria-hidden />
+                  {agendaNotifications.length > 0 ? (
+                    <span className="notification-badge" aria-hidden="true">
+                      {Math.min(agendaNotifications.length, 9)}
+                    </span>
+                  ) : null}
+                </button>
+
+                {showNotifications && (
+                  <div className="notification-panel" role="dialog" aria-label="Уведомления">
+                    <div className="notification-panel-head">
+                      <strong>Уведомления</strong>
+                      <span className="secondary-text">{agendaNotifications.length || 0}</span>
+                    </div>
+
+                    {agendaNotifications.length === 0 ? (
+                      <p className="secondary-text notification-empty">
+                        Пока всё спокойно: просроченных шагов и новых напоминаний нет.
+                      </p>
+                    ) : (
+                      <div className="notification-list">
+                        {agendaNotifications.map(item => (
+                          <button
+                            key={item.id}
+                            type="button"
+                            className={`notification-item notification-item--${item.tone}`}
+                            onClick={() => handleNotificationSelect(item)}
+                          >
+                            <span className="notification-item-title">{item.title}</span>
+                            <span className="notification-item-text">{item.text}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+
+                    <button
+                      type="button"
+                      className="text-button notification-settings-link"
+                      onClick={() => {
+                        setShowNotifications(false)
+                        setShowProfile(true)
+                      }}
+                    >
+                      Открыть настройки
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
           </header>
 
           <div className="agenda-layout">
             <div className="agenda-column agenda-column--main">
-              <div className="section-heading-row">
+              <div className="section-heading-row section-heading-row--goal">
                 <h2>Текущая цель</h2>
-                {safeGoals.length > 1 && activeGoal && (
-                  <span className="goal-pill" aria-live="polite">
-                    {safeGoals.findIndex(g => g.id === activeGoal.id) + 1} / {safeGoals.length}
-                  </span>
-                )}
               </div>
 
-              <div
-                role={safeGoals.length > 1 && activeGoal ? 'region' : undefined}
-                aria-label={safeGoals.length > 1 && activeGoal ? 'Текущая цель, листайте свайпом' : undefined}
-                tabIndex={safeGoals.length > 1 && activeGoal ? 0 : undefined}
-                className={`goal-hero-card ${safeGoals.length > 1 ? 'goal-hero-card--switchable' : ''}`}
-                onKeyDown={
-                  safeGoals.length > 1 && activeGoal
-                    ? e => {
-                        if (e.key === 'ArrowLeft') {
-                          e.preventDefault()
-                          switchActiveGoal(-1)
-                        } else if (e.key === 'ArrowRight') {
-                          e.preventDefault()
-                          switchActiveGoal(1)
-                        }
-                      }
-                    : undefined
-                }
-                onTouchStart={
-                  safeGoals.length > 1 && activeGoal
-                    ? e => {
-                        goalSwipe.current.x = e.targetTouches[0].clientX
-                      }
-                    : undefined
-                }
-                onTouchEnd={
-                  safeGoals.length > 1 && activeGoal
-                    ? e => {
-                        const start = goalSwipe.current.x
-                        if (start == null) return
-                        const end = e.changedTouches[0].clientX
-                        const dx = end - start
-                        goalSwipe.current.x = null
-                        if (Math.abs(dx) < 48) return
-                        if (dx < 0) switchActiveGoal(1)
-                        else switchActiveGoal(-1)
-                      }
-                    : undefined
-                }
-              >
+              <div className="goal-summary-card">
                 {!activeGoal ? (
                   <button
                     type="button"
                     className="goal-hero-empty-cta"
-                    onClick={() => {
-                      beginNewGoalGeneration()
-                      setActiveTab('generate')
-                    }}
+                    onClick={openNewGoalFlow}
                     aria-label="Написать новую цель"
                   >
                     <span className="goal-hero-empty-title">Напишите сюда цель</span>
@@ -2493,89 +2713,95 @@ function App() {
                     </span>
                   </button>
                 ) : (
-                  <div className="goal-hero-top">
-                    <div className="goal-hero-text-block">
-                      <div className="goal-hero-title-row">
-                        <span className="goal-hero-icon" aria-hidden="true">
-                          <GoalCategoryIcon category={activeGoal.category} />
+                  <div className="goal-summary-main">
+                    <span className="goal-summary-icon" aria-hidden="true">
+                      <GoalCategoryIcon category={activeGoal.category} size={28} />
+                    </span>
+
+                    <div className="goal-summary-content">
+                      <div className="goal-selector-shell" ref={goalMenuRef}>
+                        <button
+                          type="button"
+                          className={`goal-selector-button ${showGoalMenu ? 'goal-selector-button--open' : ''}`}
+                          aria-haspopup="menu"
+                          aria-expanded={showGoalMenu}
+                          onClick={() => {
+                            setShowGoalMenu(prev => !prev)
+                            setShowNotifications(false)
+                          }}
+                        >
+                          <span className="goal-selector-button-label">{activeGoal.text}</span>
+                          <CaretDown
+                            size={18}
+                            weight="bold"
+                            aria-hidden
+                            className={`goal-selector-caret ${showGoalMenu ? 'goal-selector-caret--open' : ''}`}
+                          />
+                        </button>
+
+                        {showGoalMenu && (
+                          <div className="goal-dropdown" role="menu" aria-label="Выбор текущей цели">
+                            {safeGoals.map(goal => (
+                              <button
+                                key={goal.id}
+                                type="button"
+                                className={`goal-dropdown-item ${goal.id === activeGoal.id ? 'goal-dropdown-item--active' : ''}`}
+                                onClick={() => setCurrentGoal(goal.id)}
+                              >
+                                <span className="goal-dropdown-item-title">{goal.text}</span>
+                                <span className="goal-dropdown-item-meta">
+                                  {(goal.microGoals || []).length} шагов
+                                </span>
+                              </button>
+                            ))}
+
+                            <button
+                              type="button"
+                              className="goal-dropdown-create"
+                              onClick={openNewGoalFlow}
+                            >
+                              <Plus size={16} weight="bold" aria-hidden />
+                              Новая цель
+                            </button>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="goal-progress-row">
+                        <div
+                          className="goal-progress-track"
+                          role="progressbar"
+                          aria-valuemin={0}
+                          aria-valuemax={100}
+                          aria-valuenow={activeGoalProgress.percent}
+                          aria-label="Прогресс по цели"
+                        >
+                          <span
+                            className="goal-progress-fill"
+                            style={{ width: `${activeGoalProgress.percent}%` }}
+                          />
+                        </div>
+                        <span className="type-accent-number goal-progress-value">
+                          {activeGoalProgress.percent}%
                         </span>
-                        <p className="goal-hero-title">{activeGoal.text}</p>
                       </div>
+
+                      <p className="secondary-text goal-progress-copy">
+                        {activeGoalProgress.completedCount} из {activeGoalProgress.total} шагов выполнено
+                      </p>
                     </div>
-                    {safeGoals.length > 1 && (
-                      <div className="goal-hero-arrows" role="group" aria-label="Переключение цели">
-                        <button
-                          type="button"
-                          className="goal-arrow"
-                          aria-label="Предыдущая цель"
-                          onClick={() => switchActiveGoal(-1)}
-                        >
-                          <CaretLeft size={22} weight="bold" aria-hidden />
-                        </button>
-                        <button
-                          type="button"
-                          className="goal-arrow"
-                          aria-label="Следующая цель"
-                          onClick={() => switchActiveGoal(1)}
-                        >
-                          <CaretRight size={22} weight="bold" aria-hidden />
-                        </button>
-                      </div>
-                    )}
-                    <button
-                      type="button"
-                      className="goal-new-button"
-                      aria-label="Новая цель"
-                      onClick={() => {
-                        beginNewGoalGeneration()
-                        setActiveTab('generate')
-                      }}
-                    >
-                      <Plus size={16} weight="bold" aria-hidden />
-                      Новая цель
-                    </button>
                   </div>
                 )}
               </div>
 
-              {activeGoal && (
-                <div className="goal-progress-card">
-                  <div className="goal-progress-head">
-                    <span>Прогресс по цели</span>
-                    <span className="type-accent-number">{activeGoalProgress.percent}%</span>
-                  </div>
-                  <div
-                    className="goal-progress-track"
-                    role="progressbar"
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                    aria-valuenow={activeGoalProgress.percent}
-                    aria-label="Прогресс по цели"
-                  >
-                    <span
-                      className="goal-progress-fill"
-                      style={{ width: `${activeGoalProgress.percent}%` }}
-                    />
-                  </div>
-                  <p className="secondary-text goal-progress-copy">
-                    Выполнено: {activeGoalProgress.completedCount} из {activeGoalProgress.total} шагов
-                  </p>
-                </div>
-              )}
-
               <div ref={agendaTasksRef} />
               <div className="section-heading-row section-heading-row--steps">
                 <h2 className="section-h2-tight">Шаги</h2>
-                {activeGoal && (
-                  <button
-                    type="button"
-                    className="section-add-button"
-                    onClick={() => openTaskEditor(activeGoal.id)}
-                  >
-                    <Plus size={16} weight="bold" aria-hidden />
-                    Добавить шаг
-                  </button>
-                )}
+                {activeGoal ? (
+                  <span className="task-section-count task-section-count--all">
+                    {agendaMicroTasks.length}
+                  </span>
+                ) : null}
               </div>
               {!activeGoal || agendaMicroTasks.length === 0 ? (
                 activeGoal ? (
@@ -2597,9 +2823,12 @@ function App() {
                   {agendaTaskSections.map((section, sectionIndex) => (
                     <section key={section.id} className={`task-section task-section--${section.id}`}>
                       <div className="task-section-head">
-                        <div>
+                        <div className="task-section-title-wrap">
+                          <span
+                            className={`task-section-marker task-section-marker--${section.tone}`}
+                            aria-hidden="true"
+                          />
                           <h3>{section.title}</h3>
-                          <p className="secondary-text">{section.description}</p>
                         </div>
                         <span className={`task-section-count task-section-count--${section.id}`}>
                           {section.items.length}
@@ -2607,8 +2836,13 @@ function App() {
                       </div>
 
                       <div className="tasks-grid">
+                        {section.items.length === 0 ? (
+                          <p className="secondary-text task-section-empty">Пока пусто</p>
+                        ) : null}
                         {section.items.map((task, index) => {
-                          const visualTone = getAgendaTaskTone(task, toIsoDate(new Date()))
+                          const todayKey = toIsoDate(new Date())
+                          const visualTone = getAgendaTaskTone(task, todayKey)
+                          const taskLabel = getAgendaTaskLabel(task, todayKey)
                           const showWarning = isRecommendedDatePassed(task)
 
                           return (
@@ -2629,19 +2863,19 @@ function App() {
 
                                 <div className="task-card-body">
                                   <div className="task-card-meta">
-                                    <span className="task-card-goal-badge" aria-hidden="true">
-                                      <GoalCategoryIcon category={activeGoal.category} size={14} />
+                                    <span className={`task-status-pill task-status-pill--${visualTone}`}>
+                                      <span
+                                        className={`task-card-priority-dot task-card-priority-dot--${visualTone}`}
+                                        aria-hidden="true"
+                                      />
+                                      {taskLabel}
                                     </span>
-                                    <span
-                                      className={`task-card-priority-dot task-card-priority-dot--${visualTone}`}
-                                      aria-hidden="true"
-                                    />
-                                    <span className="task-card-status-label">{section.title}</span>
 
                                     {task.completed ? (
                                       <span className="task-date-badge task-date-badge--done">
+                                        <CalendarBlank size={14} weight="regular" aria-hidden />
                                         {task.completedAt
-                                          ? `Готово ${formatCompactDateTime(task.completedAt)}`
+                                          ? formatCompactDateTime(task.completedAt)
                                           : 'Выполнено'}
                                       </span>
                                     ) : (
@@ -2657,6 +2891,7 @@ function App() {
                                           })
                                         }
                                       >
+                                        <CalendarBlank size={14} weight="regular" aria-hidden />
                                         {task.recommendedDate
                                           ? formatRecommendedDate(task.recommendedDate)
                                           : 'Без даты'}
@@ -2730,9 +2965,20 @@ function App() {
                   ))}
                 </div>
               )}
+
+              {activeGoal ? (
+                <button
+                  type="button"
+                  className="tasks-add-button"
+                  onClick={() => openTaskEditor(activeGoal.id)}
+                >
+                  <Plus size={18} weight="bold" aria-hidden />
+                  Добавить шаг
+                </button>
+              ) : null}
             </div>
 
-            <aside className="agenda-column agenda-column--side">
+            <aside className="agenda-column agenda-column--side" ref={recommendationsRef}>
               <h2 className="section-h2-tight">Рекомендации</h2>
               <p className="secondary-text section-subline">Идеи шагов для вашей цели</p>
               <div className="recommendations-row">
@@ -2757,10 +3003,16 @@ function App() {
                         className={`recommendation-card ${item.instantEnter ? 'micro-appear-instant' : 'micro-appear'}`}
                         style={item.instantEnter ? undefined : { '--appear-i': index }}
                       >
-                        <div className="recommendation-icon">
-                          <Sparkle size={22} weight="regular" aria-hidden />
-                        </div>
-                        <p>{item.text}</p>
+                        <button
+                          type="button"
+                          className="recommendation-card-preview"
+                          onClick={() => setSelectedRecommendationId(item.id)}
+                        >
+                          <div className="recommendation-icon">
+                            <Sparkle size={22} weight="regular" aria-hidden />
+                          </div>
+                          <p>{item.text}</p>
+                        </button>
                         <div className="recommendation-card-actions">
                           <div className="recommendation-card-buttons">
                             <button
@@ -2831,10 +3083,10 @@ function App() {
               <div className="generation-home-grid">
                 <div className="generation-home-main">
                   <div className="empty-space" />
-                  <h2 className="center-title generation-main-title">Опиши цель</h2>
+                  <h2 className="center-title generation-main-title">Опиши цель — мы разобьём её на шаги</h2>
                   <div className="generation-form-card">
                     <label htmlFor="generation-input" className="generation-label">
-                      Опиши цель
+                      Цель
                     </label>
                     <textarea
                       ref={generationInputRef}
@@ -2870,7 +3122,10 @@ function App() {
                       </div>
                     </div>
                     <div className="generation-preview-card" aria-hidden="true">
-                      <span className="generation-label generation-label--muted">Пример результата</span>
+                      <div className="generation-preview-head">
+                        <span className="generation-preview-icon" aria-hidden="true">🎯</span>
+                        <span className="generation-label">Пример</span>
+                      </div>
                       <div className="generation-preview-lines">
                         <strong>Выучить английский</strong>
                         <span>1. Выучить 10 новых слов</span>
@@ -2890,8 +3145,15 @@ function App() {
                     disabled={isGenerating || !generationInput.trim()}
                     onClick={() => handleGenerate()}
                   >
-                    {isGenerating ? 'Создаём план…' : 'Сгенерировать'}
+                    {isGenerating ? 'Генерируем шаги…' : 'Получить шаги'}
                   </button>
+                  {isGenerating ? (
+                    <div className="generation-loading-card" aria-live="polite">
+                      <strong>Генерируем шаги...</strong>
+                      <span>⚡ Анализируем цель</span>
+                      <span>⚡ Подбираем первые шаги</span>
+                    </div>
+                  ) : null}
                 </div>
 
               {recentGenerations.length > 0 && (
@@ -3060,6 +3322,60 @@ function App() {
             </div>
           )}
         </section>
+      )}
+
+      {selectedRecommendation && (
+        <div className="modal-backdrop" onClick={() => setSelectedRecommendationId(null)}>
+          <section
+            className="task-modal recommendation-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Рекомендация"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="task-modal-head">
+              <h2>Рекомендация</h2>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="Закрыть"
+                onClick={() => setSelectedRecommendationId(null)}
+              >
+                <X size={20} weight="regular" aria-hidden />
+              </button>
+            </div>
+
+            <div className="recommendation-modal-body">
+              <span className="recommendation-modal-badge">Идея для текущей цели</span>
+              <p className="recommendation-modal-text">{selectedRecommendation.text}</p>
+              <p className="secondary-text recommendation-modal-note">
+                Сразу добавьте шаг в план или сначала выберите дату.
+              </p>
+            </div>
+
+            <div className="task-modal-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() =>
+                  openGeneratedDateEditor('recommendation', {
+                    recommendationId: selectedRecommendation.id,
+                    value: normalizeIsoDate(selectedRecommendation.recommendedDate),
+                  })
+                }
+              >
+                Выбрать дату
+              </button>
+              <button
+                type="button"
+                className="primary-button"
+                onClick={() => addRecommendationToActiveGoal(selectedRecommendation)}
+              >
+                Добавить в план
+              </button>
+            </div>
+          </section>
+        </div>
       )}
 
       {generatedDateEditor && (
@@ -3251,6 +3567,19 @@ function App() {
             </section>
           </div>
         </section>
+      )}
+        </div>
+      </div>
+
+      {!showProfile && activeTab === 'agenda' && activeGoal && (
+        <button
+          type="button"
+          className="tasks-add-mobile-fixed"
+          onClick={() => openTaskEditor(activeGoal.id)}
+        >
+          <Plus size={18} weight="bold" aria-hidden />
+          Добавить шаг
+        </button>
       )}
 
       {!showProfile && (
