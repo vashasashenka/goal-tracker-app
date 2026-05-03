@@ -15,6 +15,8 @@ import {
   X,
 } from '@phosphor-icons/react'
 import Analytics from './components/Analytics'
+import CompletedGoalsPreview from './components/CompletedGoalsPreview'
+import CompletedGoalsScreen from './components/CompletedGoalsScreen'
 import { normalizeGoalCategory, resolveGoalCreatedAt } from './utils/statistics'
 
 function normalizeApiBase(url) {
@@ -527,6 +529,7 @@ function App() {
   })
   const [activeTab, setActiveTab] = useState('agenda')
   const [showProfile, setShowProfile] = useState(false)
+  const [showCompletedGoalsView, setShowCompletedGoalsView] = useState(false)
 
   const [isOnline, setIsOnline] = useState(navigator.onLine)
   const [aiError, setAiError] = useState('')
@@ -537,6 +540,11 @@ function App() {
   const [userName, setUserName] = useState(() => initialUserName)
   const [userEmail, setUserEmail] = useState(() => initialUserEmail)
   const [nameDraft, setNameDraft] = useState(() => initialUserName)
+  const [profileNameDraft, setProfileNameDraft] = useState(() => initialUserName)
+  const [isEditingProfileName, setIsEditingProfileName] = useState(false)
+  const [profileBusy, setProfileBusy] = useState(false)
+  const [profileNotice, setProfileNotice] = useState('')
+  const [profileNoticeTone, setProfileNoticeTone] = useState('')
   const [emailDraft, setEmailDraft] = useState(() => initialUserEmail)
   const [authToken, setAuthToken] = useState(() => initialAuthToken)
   const [authMode, setAuthMode] = useState('login')
@@ -608,6 +616,11 @@ function App() {
     isValidResetCode(resetCodeDraft) &&
     String(resetNewPasswordDraft || '').length >= 8 &&
     resetNewPasswordDraft === resetNewPasswordRepeatDraft
+  const trimmedProfileName = String(profileNameDraft || '').trim()
+  const canSaveProfileName =
+    Boolean(trimmedProfileName) &&
+    trimmedProfileName.length <= 80 &&
+    trimmedProfileName !== String(userName || '').trim()
   const activeGoalStorageKey = useMemo(
     () => makeScopedStorageKey(ACTIVE_GOAL_KEY, storageScope),
     [storageScope]
@@ -693,6 +706,10 @@ function App() {
   }, [userName])
 
   useEffect(() => {
+    setProfileNameDraft(userName)
+  }, [userName])
+
+  useEffect(() => {
     if (normalizedUserEmail) localStorage.setItem(USER_EMAIL_KEY, normalizedUserEmail)
     else localStorage.removeItem(USER_EMAIL_KEY)
   }, [normalizedUserEmail])
@@ -725,7 +742,11 @@ function App() {
         setUserName(nextName)
         setUserEmail(nextEmail)
         setNameDraft(nextName)
+        setProfileNameDraft(nextName)
         setEmailDraft(nextEmail)
+        setIsEditingProfileName(false)
+        setProfileNotice('')
+        setProfileNoticeTone('')
         setAuthError('')
         setAuthInfo('')
       } catch (error) {
@@ -738,7 +759,11 @@ function App() {
         setUserName('')
         setUserEmail('')
         setNameDraft('')
+        setProfileNameDraft('')
         setEmailDraft('')
+        setIsEditingProfileName(false)
+        setProfileNotice('')
+        setProfileNoticeTone('')
         setAuthError('Сессия истекла. Войдите снова.')
         setAuthInfo('')
       } finally {
@@ -783,6 +808,10 @@ function App() {
     setGenRowBusyId(null)
     setGeneratedDateEditor(null)
     setIsAddingOwnStep(false)
+    setShowCompletedGoalsView(false)
+    setIsEditingProfileName(false)
+    setProfileNotice('')
+    setProfileNoticeTone('')
   }, [storageScope])
 
   useEffect(() => {
@@ -947,7 +976,7 @@ function App() {
 
   useEffect(() => {
     setShowGoalMenu(false)
-  }, [activeTab, showProfile, activeGoalId])
+  }, [activeTab, showProfile, showCompletedGoalsView, activeGoalId])
 
   function setCurrentGoal(goalId) {
     setActiveGoalId(goalId)
@@ -961,6 +990,38 @@ function App() {
     setShowGoalMenu(false)
     setActiveTab('generate')
     setShowProfile(false)
+    setShowCompletedGoalsView(false)
+  }
+
+  function openMainTab(tabId) {
+    setShowGoalMenu(false)
+    setShowProfile(false)
+    setShowCompletedGoalsView(false)
+    setActiveTab(tabId)
+  }
+
+  function openSettingsScreen() {
+    setShowGoalMenu(false)
+    setShowCompletedGoalsView(false)
+    setShowProfile(true)
+    setIsEditingProfileName(false)
+    setProfileNameDraft(userName)
+    setProfileNotice('')
+    setProfileNoticeTone('')
+  }
+
+  function openCompletedGoalsScreen() {
+    setShowGoalMenu(false)
+    setShowProfile(false)
+    setActiveTab('journal')
+    setShowCompletedGoalsView(true)
+  }
+
+  function openStatisticsOverview() {
+    setShowGoalMenu(false)
+    setShowProfile(false)
+    setActiveTab('journal')
+    setShowCompletedGoalsView(false)
   }
 
   function replaceGoalInState(nextGoal) {
@@ -1735,7 +1796,24 @@ function App() {
 
   async function clearCompletedHistory() {
     const confirmed = window.confirm(
-      'Удалить всю историю завершённых целей и все активные цели с микрошагами? Это действие нельзя отменить.'
+      'Удалить всю историю завершённых целей? Активные цели и микрошаги останутся без изменений.'
+    )
+    if (!confirmed) return
+
+    try {
+      if (hasAccountAccess) {
+        await apiRequest('/api/completed-goals', { method: 'DELETE', sessionToken })
+      }
+      setCompletedGoals([])
+    } catch (error) {
+      console.error('Ошибка очистки:', error)
+      setAiError('Не удалось очистить данные. Попробуйте позже')
+    }
+  }
+
+  async function resetAllProgress() {
+    const confirmed = window.confirm(
+      'Сбросить весь прогресс? Будут удалены все активные и завершённые цели, шаги и история. Аккаунт останется.'
     )
     if (!confirmed) return
 
@@ -1746,19 +1824,24 @@ function App() {
           apiRequest('/api/completed-goals', { method: 'DELETE', sessionToken }),
         ])
       }
-      setCompletedGoals([])
+
       setGoals([])
+      setCompletedGoals([])
       setActiveGoalId(null)
       localStorage.removeItem(activeGoalStorageKey)
       setRecommendations([])
       setRecommendationsSource('')
+      setRecommendationsCache({})
       setRecentGenerations([])
       localStorage.removeItem(makeScopedStorageKey(RECENT_GENERATIONS_KEY, storageScope))
       resetGenerationUi()
       cancelInlineTaskEdit()
+      closeTaskEditor()
+      setShowCompletedGoalsView(false)
+      setAiError('')
     } catch (error) {
-      console.error('Ошибка очистки:', error)
-      setAiError('Не удалось очистить данные. Попробуйте позже')
+      console.error('Ошибка сброса прогресса:', error)
+      setAiError('Не удалось сбросить прогресс. Попробуйте позже')
     }
   }
 
@@ -1775,9 +1858,13 @@ function App() {
     setUserName(nextName)
     setUserEmail(nextEmail)
     setNameDraft(nextName)
+    setProfileNameDraft(nextName)
     setEmailDraft(nextEmail)
     setPasswordDraft('')
     setPasswordRepeatDraft('')
+    setIsEditingProfileName(false)
+    setProfileNotice('')
+    setProfileNoticeTone('')
     resetRegisterFlow()
     setAuthMode('login')
     setAuthError('')
@@ -1964,6 +2051,7 @@ function App() {
     setUserName('')
     setUserEmail('')
     setNameDraft('')
+    setProfileNameDraft('')
     resetRegisterFlow()
     resetRecoveryFlow({ keepEmail: Boolean(nextEmail) })
     setEmailDraft(nextEmail)
@@ -1972,7 +2060,11 @@ function App() {
     setResetStage(nextResetStage)
     setAuthMode(nextAuthMode)
     setShowProfile(false)
+    setShowCompletedGoalsView(false)
     setActiveTab('agenda')
+    setIsEditingProfileName(false)
+    setProfileNotice('')
+    setProfileNoticeTone('')
     setAiError('')
     setAuthError('')
     setAuthInfo(nextAuthInfo)
@@ -2040,6 +2132,58 @@ function App() {
       setAiError(error?.message || 'Не удалось открыть восстановление пароля')
     } finally {
       setAuthBusy(false)
+    }
+  }
+
+  async function saveProfileName() {
+    if (!sessionToken) return
+
+    const nextName = String(profileNameDraft || '').trim()
+    if (!nextName) {
+      setProfileNotice('Имя не может быть пустым')
+      setProfileNoticeTone('error')
+      return
+    }
+    if (nextName.length > 80) {
+      setProfileNotice('Имя должно быть короче 80 символов')
+      setProfileNoticeTone('error')
+      return
+    }
+    if (nextName === String(userName || '').trim()) {
+      setIsEditingProfileName(false)
+      setProfileNotice('')
+      setProfileNoticeTone('')
+      return
+    }
+
+    setProfileBusy(true)
+    setProfileNotice('')
+    setProfileNoticeTone('')
+
+    try {
+      const payload = await apiRequest('/api/auth/profile', {
+        method: 'PATCH',
+        body: { name: nextName },
+        sessionToken,
+      })
+
+      const savedName = String(payload?.user?.name || '').trim()
+      if (!savedName) {
+        throw new Error('Не удалось сохранить имя')
+      }
+
+      setUserName(savedName)
+      setNameDraft(savedName)
+      setProfileNameDraft(savedName)
+      setIsEditingProfileName(false)
+      setProfileNotice('Имя сохранено')
+      setProfileNoticeTone('success')
+    } catch (error) {
+      console.error('Обновление имени:', error)
+      setProfileNotice(error?.message || 'Не удалось сохранить имя')
+      setProfileNoticeTone('error')
+    } finally {
+      setProfileBusy(false)
     }
   }
 
@@ -2440,10 +2584,7 @@ function App() {
             <button
               type="button"
               className="sidebar-brand"
-              onClick={() => {
-                setShowProfile(false)
-                setActiveTab('agenda')
-              }}
+              onClick={() => openMainTab('agenda')}
             >
               Goal Tracker
             </button>
@@ -2452,10 +2593,7 @@ function App() {
               <button
                 type="button"
                 className={`sidebar-nav-item ${!showProfile && activeTab === 'agenda' ? 'sidebar-nav-item--active' : ''}`}
-                onClick={() => {
-                  setShowProfile(false)
-                  setActiveTab('agenda')
-                }}
+                onClick={() => openMainTab('agenda')}
               >
                 <ListBullets size={20} weight={!showProfile && activeTab === 'agenda' ? 'fill' : 'regular'} aria-hidden />
                 <span>План</span>
@@ -2463,10 +2601,7 @@ function App() {
               <button
                 type="button"
                 className={`sidebar-nav-item ${!showProfile && activeTab === 'generate' ? 'sidebar-nav-item--active' : ''}`}
-                onClick={() => {
-                  setShowProfile(false)
-                  setActiveTab('generate')
-                }}
+                onClick={() => openMainTab('generate')}
               >
                 <Sparkle size={20} weight={!showProfile && activeTab === 'generate' ? 'fill' : 'regular'} aria-hidden />
                 <span>Генерация</span>
@@ -2474,13 +2609,18 @@ function App() {
               <button
                 type="button"
                 className={`sidebar-nav-item ${!showProfile && activeTab === 'journal' ? 'sidebar-nav-item--active' : ''}`}
-                onClick={() => {
-                  setShowProfile(false)
-                  setActiveTab('journal')
-                }}
+                onClick={openStatisticsOverview}
               >
                 <ChartBar size={20} weight={!showProfile && activeTab === 'journal' ? 'fill' : 'regular'} aria-hidden />
                 <span>Статистика</span>
+              </button>
+              <button
+                type="button"
+                className={`sidebar-nav-item ${showProfile ? 'sidebar-nav-item--active' : ''}`}
+                onClick={openSettingsScreen}
+              >
+                <Gear size={20} weight={showProfile ? 'fill' : 'regular'} aria-hidden />
+                <span>Настройки</span>
               </button>
             </nav>
           </div>
@@ -2506,14 +2646,6 @@ function App() {
               >
                 <Plus size={18} weight="bold" aria-hidden />
                 <span className="agenda-create-goal-button-label">Новая цель</span>
-              </button>
-              <button
-                type="button"
-                className="icon-button agenda-settings-button"
-                onClick={() => setShowProfile(true)}
-                aria-label="Настройки"
-              >
-                <Gear size={20} weight="regular" aria-hidden />
               </button>
             </div>
           </header>
@@ -2867,6 +2999,12 @@ function App() {
                   )
                 )}
               </div>
+
+              <CompletedGoalsPreview
+                goals={safeCompletedGoals}
+                onOpenAll={openCompletedGoalsScreen}
+                className="agenda-completed-panel"
+              />
             </aside>
           </div>
         </section>
@@ -3090,10 +3228,19 @@ function App() {
         </div>
       )}
 
-      {!showProfile && activeTab === 'journal' && (
+      {!showProfile && activeTab === 'journal' && !showCompletedGoalsView && (
         <Analytics
           goals={safeGoals}
           completedGoals={safeCompletedGoals}
+          onOpenCompletedGoals={openCompletedGoalsScreen}
+          onResetProgress={resetAllProgress}
+        />
+      )}
+
+      {!showProfile && activeTab === 'journal' && showCompletedGoalsView && (
+        <CompletedGoalsScreen
+          goals={safeCompletedGoals}
+          onBack={openStatisticsOverview}
           onClearHistory={clearCompletedHistory}
         />
       )}
@@ -3107,7 +3254,7 @@ function App() {
               onClick={() => setShowProfile(false)}
             >
               <ArrowLeft size={18} weight="regular" aria-hidden />
-              План
+              Назад
             </button>
             <div className="screen-header-copy">
               <h1>Настройки</h1>
@@ -3123,14 +3270,93 @@ function App() {
                 <div className="settings-card-head">
                   <h2>Профиль</h2>
                 </div>
-                <div className="settings-info-row">
-                  <span className="settings-info-label">Имя</span>
-                  <strong>{userName || 'Без имени'}</strong>
+                <div className="settings-info-row settings-info-row--stacked">
+                  <div className="settings-inline-head">
+                    <span className="settings-info-label">Имя</span>
+                    {!isEditingProfileName ? (
+                      <button
+                        type="button"
+                        className="text-button settings-inline-link"
+                        onClick={() => {
+                          setIsEditingProfileName(true)
+                          setProfileNameDraft(userName)
+                          setProfileNotice('')
+                          setProfileNoticeTone('')
+                        }}
+                      >
+                        Изменить
+                      </button>
+                    ) : null}
+                  </div>
+
+                  {isEditingProfileName ? (
+                    <div className="settings-inline-form">
+                      <input
+                        type="text"
+                        className="settings-inline-input"
+                        value={profileNameDraft}
+                        maxLength={80}
+                        autoFocus
+                        onChange={event => setProfileNameDraft(event.target.value)}
+                        onKeyDown={event => {
+                          if (event.key === 'Enter') {
+                            event.preventDefault()
+                            void saveProfileName()
+                          } else if (event.key === 'Escape') {
+                            event.preventDefault()
+                            setIsEditingProfileName(false)
+                            setProfileNameDraft(userName)
+                            setProfileNotice('')
+                            setProfileNoticeTone('')
+                          }
+                        }}
+                      />
+
+                      <div className="settings-inline-actions">
+                        <button
+                          type="button"
+                          className="text-button settings-inline-link"
+                          disabled={profileBusy}
+                          onClick={() => {
+                            setIsEditingProfileName(false)
+                            setProfileNameDraft(userName)
+                            setProfileNotice('')
+                            setProfileNoticeTone('')
+                          }}
+                        >
+                          Отмена
+                        </button>
+                        <button
+                          type="button"
+                          className="text-button settings-inline-save"
+                          disabled={profileBusy || !canSaveProfileName}
+                          onClick={() => void saveProfileName()}
+                        >
+                          Сохранить
+                        </button>
+                      </div>
+
+                      {trimmedProfileName.length > 80 ? (
+                        <p className="settings-inline-feedback settings-inline-feedback--error">
+                          Имя должно быть короче 80 символов
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <strong>{userName || 'Без имени'}</strong>
+                  )}
                 </div>
                 <div className="settings-info-row">
                   <span className="settings-info-label">Почта</span>
                   <strong>{userEmail || 'Без почты'}</strong>
                 </div>
+                {profileNotice ? (
+                  <p
+                    className={`settings-inline-feedback settings-inline-feedback--${profileNoticeTone || 'success'}`}
+                  >
+                    {profileNotice}
+                  </p>
+                ) : null}
               </div>
             </section>
 
@@ -3168,39 +3394,48 @@ function App() {
         </div>
       </div>
 
-      {!showProfile && (
-        <nav className="tab-bar">
-          <button
-            type="button"
-            className={activeTab === 'agenda' ? 'active' : ''}
-            onClick={() => setActiveTab('agenda')}
-          >
-            <span className="tab-bar-inner">
-              <ListBullets size={22} weight={activeTab === 'agenda' ? 'fill' : 'regular'} aria-hidden />
-              <span>План</span>
-            </span>
-          </button>
-          <button
-            type="button"
-            className={activeTab === 'generate' ? 'active' : ''}
-            onClick={() => {
-              beginNewGoalGeneration()
-              setActiveTab('generate')
-            }}
-          >
-            <span className="tab-bar-inner">
-              <Sparkle size={22} weight={activeTab === 'generate' ? 'fill' : 'regular'} aria-hidden />
-              <span>Генерация</span>
-            </span>
-          </button>
-          <button type="button" className={activeTab === 'journal' ? 'active' : ''} onClick={() => setActiveTab('journal')}>
-            <span className="tab-bar-inner">
-              <ChartBar size={22} weight={activeTab === 'journal' ? 'fill' : 'regular'} aria-hidden />
-              <span>Статистика</span>
-            </span>
-          </button>
-        </nav>
-      )}
+      <nav className="tab-bar">
+        <button
+          type="button"
+          className={!showProfile && activeTab === 'agenda' ? 'active' : ''}
+          onClick={() => openMainTab('agenda')}
+        >
+          <span className="tab-bar-inner">
+            <ListBullets size={22} weight={!showProfile && activeTab === 'agenda' ? 'fill' : 'regular'} aria-hidden />
+            <span>План</span>
+          </span>
+        </button>
+        <button
+          type="button"
+          className={!showProfile && activeTab === 'generate' ? 'active' : ''}
+          onClick={() => openMainTab('generate')}
+        >
+          <span className="tab-bar-inner">
+            <Sparkle size={22} weight={!showProfile && activeTab === 'generate' ? 'fill' : 'regular'} aria-hidden />
+            <span>Генерация</span>
+          </span>
+        </button>
+        <button
+          type="button"
+          className={!showProfile && activeTab === 'journal' ? 'active' : ''}
+          onClick={openStatisticsOverview}
+        >
+          <span className="tab-bar-inner">
+            <ChartBar size={22} weight={!showProfile && activeTab === 'journal' ? 'fill' : 'regular'} aria-hidden />
+            <span>Статистика</span>
+          </span>
+        </button>
+        <button
+          type="button"
+          className={showProfile ? 'active' : ''}
+          onClick={openSettingsScreen}
+        >
+          <span className="tab-bar-inner">
+            <Gear size={22} weight={showProfile ? 'fill' : 'regular'} aria-hidden />
+            <span>Настройки</span>
+          </span>
+        </button>
+      </nav>
 
       {taskEditor && (
         <div className="modal-backdrop" onClick={closeTaskEditor}>

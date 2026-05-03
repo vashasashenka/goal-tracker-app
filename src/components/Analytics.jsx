@@ -1,16 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
-import { ArrowLeft, CalendarBlank, CaretRight } from '@phosphor-icons/react'
+import { useMemo, useState } from 'react'
+import { CalendarBlank, CaretRight } from '@phosphor-icons/react'
+import CompletedGoalsPreview from './CompletedGoalsPreview'
 import {
-  countDaysInclusive,
-  filterGoals,
-  generateInsights,
-  getAvgMicroPerDayInBounds,
-  getBestWeekdayMicroFromGoals,
-  getMicroBarPercent,
   getMicroProgressForScopedGoals,
-  getMicroStreakDays,
   getMicroStepActivityDateKey,
-  getRecentCompleted,
   normalizeGoalForStats,
 } from '../utils/statistics'
 
@@ -21,24 +14,8 @@ const RANGE_OPTIONS = [
   { id: 'all', label: 'Все время' },
 ]
 
-const ACTIVITY_VIEW_OPTIONS = {
-  week: [{ id: 'day', label: 'По дням' }],
-  month: [
-    { id: 'day', label: 'По дням' },
-    { id: 'week', label: 'По неделям' },
-  ],
-  year: [{ id: 'week', label: 'По неделям' }],
-  all: [{ id: 'month', label: 'По месяцам' }],
-}
-
 const DOW_SHORT = ['ВС', 'ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ', 'СБ']
-const INSIGHT_ICONS = ['↗', '▥', '🔥']
 const MS_PER_DAY = 24 * 60 * 60 * 1000
-const ARCHIVE_FILTER_OPTIONS = [
-  { id: 'all', label: 'Все' },
-  { id: 'month', label: 'За месяц' },
-  { id: 'year', label: 'За год' },
-]
 
 function pluralize(count, forms) {
   const value = Math.abs(Math.trunc(Number(count) || 0))
@@ -81,18 +58,8 @@ function formatFullMonth(dateLike) {
   return date.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' }).replace(/\s?г\.$/, '')
 }
 
-function formatTimeLabel(value) {
-  const date = value ? new Date(value) : null
-  if (!date || Number.isNaN(date.getTime())) return 'Без времени'
-  return date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
-}
-
 function formatStepCount(count) {
   return `${count} ${pluralize(count, ['шаг', 'шага', 'шагов'])}`
-}
-
-function formatMicroCount(count) {
-  return `${count} ${pluralize(count, ['микрошаг', 'микрошага', 'микрошагов'])}`
 }
 
 function startOfDay(dateLike) {
@@ -246,13 +213,10 @@ function createActivityBuckets(bounds, view) {
       const date = new Date(`${key}-01T12:00:00`)
       return {
         key,
-        startKey: `${key}-01`,
-        endKey: `${key}-31`,
         label: formatShortMonth(date),
         subLabel: String(date.getFullYear()),
         heading: formatFullMonth(date),
         count: 0,
-        details: [],
       }
     })
   }
@@ -274,13 +238,10 @@ function createActivityBuckets(bounds, view) {
 
       buckets.push({
         key: `${startKey}:${endKey}`,
-        startKey,
-        endKey,
         label: formatWeekLabel(startKey, endKey),
         subLabel: '',
         heading: formatWeekHeading(startKey, endKey),
         count: 0,
-        details: [],
       })
 
       cursor = addDays(bucketStart, 7)
@@ -294,13 +255,10 @@ function createActivityBuckets(bounds, view) {
     const date = new Date(`${key}T12:00:00`)
     return {
       key,
-      startKey: key,
-      endKey: key,
       label: String(date.getDate()),
       subLabel: DOW_SHORT[date.getDay()]?.toLowerCase?.() || '',
       heading: formatActivityHeading(key),
       count: 0,
-      details: [],
     }
   })
 }
@@ -309,7 +267,7 @@ function buildActivityEntries(goals, bounds, view) {
   const buckets = createActivityBuckets(bounds, view)
   if (buckets.length === 0) return []
 
-  const entries = buckets.map(bucket => ({ ...bucket, details: [] }))
+  const entries = buckets.map(bucket => ({ ...bucket }))
   const startTime = bounds?.start?.getTime?.() || 0
   const fromKey = bounds?.start ? toLocalDateKey(bounds.start) : ''
   const toKey = bounds?.end ? toLocalDateKey(bounds.end) : ''
@@ -337,29 +295,7 @@ function buildActivityEntries(goals, bounds, view) {
       }
       if (!entry) continue
 
-      const exactTime = String(step.completedAt || '').trim()
-      const timeSort = exactTime
-        ? new Date(exactTime).getTime()
-        : new Date(`${dateKey}T23:59:59`).getTime()
-
       entry.count += 1
-      entry.details.push({
-        id: `${goal.id}-${step.id}-${dateKey}`,
-        title: step.title,
-        goalTitle: goal.title,
-        timeLabel: view === 'day'
-          ? exactTime
-            ? formatTimeLabel(exactTime)
-            : 'Без времени'
-          : view === 'week'
-          ? exactTime
-            ? `${formatDashboardDate(`${dateKey}T12:00:00`)} · ${formatTimeLabel(exactTime)}`
-            : formatDashboardDate(`${dateKey}T12:00:00`)
-          : exactTime
-            ? `${formatDashboardDate(`${dateKey}T12:00:00`)} · ${formatTimeLabel(exactTime)}`
-            : formatDashboardDate(`${dateKey}T12:00:00`),
-        timeSort,
-      })
     }
   }
 
@@ -370,82 +306,21 @@ function buildActivityEntries(goals, bounds, view) {
   }))
 }
 
-function buildLastWeekStrip(now, completionKeys) {
-  const end = startOfDay(now)
-  if (!end) return []
-  const set = completionKeys instanceof Set ? completionKeys : new Set(completionKeys)
-  const out = []
-
-  for (let i = 6; i >= 0; i -= 1) {
-    const d = new Date(end)
-    d.setDate(d.getDate() - i)
-    const key = toLocalDateKey(d)
-    out.push({
-      key,
-      label: DOW_SHORT[d.getDay()],
-      on: set.has(key),
-    })
-  }
-
-  return out
-}
-
-function getGoalEmoji(category) {
-  if (category === 'Учёба') return '🎓'
-  if (category === 'Работа') return '💼'
-  if (category === 'Личное') return '🌿'
-  return '📘'
-}
-
-function getCompletedGoalSortTime(goal) {
-  const completedAt = goal?.completedAt ? new Date(goal.completedAt).getTime() : 0
-  if (Number.isFinite(completedAt) && completedAt > 0) return completedAt
-  const createdAt = goal?.createdAt ? new Date(goal.createdAt).getTime() : 0
-  return Number.isFinite(createdAt) ? createdAt : 0
-}
-
-function filterCompletedGoalsForArchive(goals, filterId) {
-  if (filterId === 'all') return goals
-
-  const now = startOfDay(new Date())
-  if (!now) return goals
-  const start = filterId === 'year' ? addDays(now, -364) : addDays(now, -29)
-  if (!start) return goals
-
-  return goals.filter(goal => {
-    const time = getCompletedGoalSortTime(goal)
-    return time >= start.getTime()
-  })
-}
-
-function formatStepTimeForJournal(step) {
-  const rawCompleted = String(step?.completedAt || '').trim()
-  if (rawCompleted) {
-    return `${formatDashboardDate(rawCompleted)} · ${formatTimeLabel(rawCompleted)}`
-  }
-  if (step?.recommendedDate) {
-    return formatDashboardDate(`${step.recommendedDate}T12:00:00`)
-  }
-  return 'Без даты'
-}
-
-function getGoalDurationDays(goal) {
-  const start = startOfDay(goal?.createdAt)
-  const end = startOfDay(goal?.completedAt)
-  if (!start || !end) return null
-  return Math.max(1, Math.round((end.getTime() - start.getTime()) / MS_PER_DAY) + 1)
-}
-
-function Analytics({ goals, completedGoals }) {
+function Analytics({ goals, completedGoals, onOpenCompletedGoals, onResetProgress }) {
   const [range, setRange] = useState('month')
-  const [activeActivityKey, setActiveActivityKey] = useState('')
+  const [activityKeyPreference, setActivityKeyPreference] = useState('')
+
+  const completedStatGoals = useMemo(
+    () => completedGoals.map(goal => normalizeGoalForStats(goal, { completed: true })),
+    [completedGoals]
+  )
 
   const statGoals = useMemo(
     () => [
       ...goals.map(goal => normalizeGoalForStats(goal, { completed: false })),
-      ...completedGoals.map(goal => normalizeGoalForStats(goal, { completed: true })),
+      ...completedStatGoals,
     ],
-    [goals, completedGoals]
+    [goals, completedStatGoals]
   )
 
   const rangeBounds = useMemo(() => getRangeBounds(range, statGoals), [range, statGoals])
@@ -475,20 +350,21 @@ function Analytics({ goals, completedGoals }) {
     return Array.from({ length: top + 1 }, (_, index) => top - index)
   }, [maxActivityCount])
 
-  useEffect(() => {
-    if (activityEntries.length === 0) {
-      if (activeActivityKey) setActiveActivityKey('')
-      return
+  const defaultActivityKey = useMemo(() => {
+    if (activityEntries.length === 0) return ''
+    return (
+      [...activityEntries].reverse().find(item => item.count > 0)?.key ||
+      activityEntries[activityEntries.length - 1]?.key ||
+      ''
+    )
+  }, [activityEntries])
+
+  const activeActivityKey = useMemo(() => {
+    if (activityEntries.some(item => item.key === activityKeyPreference)) {
+      return activityKeyPreference
     }
-
-    const hasActive = activityEntries.some(item => item.key === activeActivityKey)
-    if (hasActive) return
-
-    const preferred =
-      [...activityEntries].reverse().find(item => item.count > 0) || activityEntries[activityEntries.length - 1]
-
-    if (preferred?.key) setActiveActivityKey(preferred.key)
-  }, [activityEntries, activeActivityKey])
+    return defaultActivityKey
+  }, [activityEntries, activityKeyPreference, defaultActivityKey])
 
   const activeActivityEntry = useMemo(
     () => activityEntries.find(item => item.key === activeActivityKey) || null,
@@ -508,23 +384,15 @@ function Analytics({ goals, completedGoals }) {
     '--activity-gap':
       activityView === 'month'
         ? '12px'
-        : activityView === 'week'
-          ? activityEntries.length > 24
-            ? '6px'
-            : '9px'
-          : activityEntries.length > 20
-            ? '6px'
-            : '8px',
+        : activityEntries.length > 20
+          ? '6px'
+          : '8px',
     '--activity-bar-width':
       activityView === 'month'
         ? '16px'
-        : activityView === 'week'
-          ? activityEntries.length > 24
-            ? '9px'
-            : '11px'
-          : activityEntries.length > 20
-            ? '9px'
-            : '11px',
+        : activityEntries.length > 20
+          ? '9px'
+          : '11px',
   }
 
   return (
@@ -533,9 +401,18 @@ function Analytics({ goals, completedGoals }) {
         <div className="screen-header-copy">
           <h1>Статистика</h1>
           <p className="secondary-text stats-screen-copy">
-            Микрошаги и прогресс по выбранному периоду
+            Микрошаги, прогресс и завершённые цели
           </p>
         </div>
+        {typeof onResetProgress === 'function' ? (
+          <button
+            type="button"
+            className="text-button stats-reset-button"
+            onClick={onResetProgress}
+          >
+            Сбросить весь прогресс
+          </button>
+        ) : null}
       </header>
 
       <div className="stats-toolbar">
@@ -582,6 +459,12 @@ function Analytics({ goals, completedGoals }) {
             </div>
           </div>
         </article>
+
+        <CompletedGoalsPreview
+          goals={completedGoals}
+          onOpenAll={onOpenCompletedGoals}
+          className="stats-card stats-card--completed"
+        />
       </div>
 
       <article className="card stats-panel stats-panel--activity stats-panel--simple">
@@ -631,9 +514,9 @@ function Analytics({ goals, completedGoals }) {
                         key={item.key}
                         type="button"
                         className={`stats-activity-day ${selected ? 'stats-activity-day--selected' : ''} stats-activity-day--${activityView} ${item.count === 0 ? 'stats-activity-day--empty' : ''}`}
-                        onMouseEnter={() => setActiveActivityKey(item.key)}
-                        onFocus={() => setActiveActivityKey(item.key)}
-                        onClick={() => setActiveActivityKey(item.key)}
+                        onMouseEnter={() => setActivityKeyPreference(item.key)}
+                        onFocus={() => setActivityKeyPreference(item.key)}
+                        onClick={() => setActivityKeyPreference(item.key)}
                         aria-pressed={selected}
                       >
                         <div className="stats-activity-bar-wrap">
