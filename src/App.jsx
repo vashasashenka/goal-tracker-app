@@ -6,6 +6,7 @@ import {
   CaretDown,
   CaretLeft,
   CaretRight,
+  Check,
   ChartBar,
   Gear,
   ListBullets,
@@ -569,6 +570,8 @@ function App() {
   const [isGenerating, setIsGenerating] = useState(false)
   const [isRefreshingRecommendations, setIsRefreshingRecommendations] = useState(false)
   const [showGeneratedResult, setShowGeneratedResult] = useState(false)
+  const [isAddingAllGeneratedSteps, setIsAddingAllGeneratedSteps] = useState(false)
+  const [addedGeneratedStepIds, setAddedGeneratedStepIds] = useState([])
   const [genCustomInput, setGenCustomInput] = useState('')
   const [genCustomDateDraft, setGenCustomDateDraft] = useState('')
   const [genRowBusyId, setGenRowBusyId] = useState(null)
@@ -626,6 +629,8 @@ function App() {
     setGenerationInput('')
     setGeneratedSteps([])
     setShowGeneratedResult(false)
+    setIsAddingAllGeneratedSteps(false)
+    setAddedGeneratedStepIds([])
     setGenCustomInput('')
     setGenCustomDateDraft('')
     setIsGenerating(false)
@@ -914,6 +919,12 @@ function App() {
   }, [activeGoal?.text, recommendations, recommendationsSource])
 
   const calendarDays = useMemo(() => buildCalendarDays(calendarViewDate), [calendarViewDate])
+  const addedGeneratedStepIdSet = useMemo(
+    () => new Set(Array.isArray(addedGeneratedStepIds) ? addedGeneratedStepIds : []),
+    [addedGeneratedStepIds]
+  )
+  const allGeneratedStepsAdded =
+    generatedSteps.length > 0 && generatedSteps.every(step => addedGeneratedStepIdSet.has(step.id))
 
   useEffect(() => {
     function handlePointerDown(event) {
@@ -1450,6 +1461,8 @@ function App() {
     const safeExcludeTexts = Array.isArray(excludeTexts) ? excludeTexts : []
 
     setIsGenerating(true)
+    setIsAddingAllGeneratedSteps(false)
+    setAddedGeneratedStepIds([])
     setAiError('')
     setShowGeneratedResult(false)
     setGeneratedSteps([])
@@ -1563,6 +1576,8 @@ function App() {
   function beginNewGoalGeneration() {
     setShowGeneratedResult(false)
     setGeneratedSteps([])
+    setIsAddingAllGeneratedSteps(false)
+    setAddedGeneratedStepIds([])
     setGenerationInput('')
     setGenCustomInput('')
     setGenCustomDateDraft('')
@@ -1614,104 +1629,58 @@ function App() {
 
   async function addGeneratedStepToAgendaAndRefill(stepId) {
     const goalTitle = generationInput.trim()
-    if (!goalTitle || genRowBusyId) return
+    if (!goalTitle || genRowBusyId || addedGeneratedStepIdSet.has(stepId)) return
     const step = generatedSteps.find(s => s.id === stepId)
     const stepText = String(step?.text || '').trim()
     if (!stepText) return
-
-    const otherPreviewTexts = generatedSteps.filter(s => s.id !== stepId).map(s => s.text)
 
     setGenRowBusyId(stepId)
     setAiError('')
 
     try {
-      let baseGoal =
-        findGoalByTitle(safeGoals, goalTitle) ||
-        (activeGoal && goalTitlesAlign(goalTitle, activeGoal.text) ? activeGoal : null)
-
-      let savedGoal = baseGoal ? normalizeGoal(baseGoal) : null
-
-      if (savedGoal && !hasSimilarTaskDuplicate(savedGoal, stepText)) {
-        const microGoals = [
-          ...(savedGoal.microGoals || []),
-          buildAppendedMicroGoal(savedGoal.microGoals, {
-            id: Date.now() + Math.floor(Math.random() * 1000),
-            text: stepText,
-            completed: false,
-            suggested: true,
-            recommendedDate: step.recommendedDate,
-            recommendedOffsetDays: step.recommendedOffsetDays,
-            forceRecommendedDate: Boolean(step.userPickedDate),
-          }),
-        ]
-        const updated = await updateGoalLocally({ ...savedGoal, microGoals })
-        savedGoal = normalizeGoal(updated)
-        replaceGoalInState(savedGoal)
-        setCurrentGoal(savedGoal.id)
-        highlightAgendaTasks([microGoals[microGoals.length - 1]?.id])
-      } else if (!savedGoal) {
-        const created = await createGoal(goalTitle)
-        if (!created) return
-        const microGoals = [
-          buildAppendedMicroGoal(created.microGoals, {
-            id: Date.now(),
-            text: stepText,
-            completed: false,
-            suggested: true,
-            recommendedDate: step.recommendedDate,
-            recommendedOffsetDays: step.recommendedOffsetDays,
-            forceRecommendedDate: Boolean(step.userPickedDate),
-          }),
-        ]
-        const updated = await updateGoalLocally({
-          ...created,
-          text: goalTitle,
-          microGoals,
-        })
-        savedGoal = normalizeGoal(updated)
-        if (savedGoal?.id != null) {
-          replaceGoalInState(savedGoal)
-          setCurrentGoal(savedGoal.id)
-          highlightAgendaTasks([microGoals[microGoals.length - 1]?.id])
-        }
-      } else {
-        savedGoal = normalizeGoal(
-          safeGoals.find(g => g.id === savedGoal.id) || savedGoal
-        )
+      const result = await saveStepsToGoal(goalTitle, [step], { suggested: true })
+      if (!result?.goal) {
+        throw new Error('save-failed')
       }
-
-      const existingTexts = [
-        ...(savedGoal?.microGoals || []).map(m => m.text),
-        ...otherPreviewTexts,
-      ].filter(Boolean)
-
-      const fresh = await fetchPreviewMicrogoals(goalTitle, existingTexts, 1)
-      const one = planSuggestedMicroGoals(fresh, savedGoal)[0]
-      const newText = String(one?.text || '').trim()
-
-      setGeneratedSteps(prev => {
-        const idx = prev.findIndex(s => s.id === stepId)
-        if (idx === -1) return prev
-        if (!newText) {
-          return prev.filter(s => s.id !== stepId)
-        }
-        const next = [...prev]
-        next[idx] = {
-          id: String(one?.id ?? `s-${Date.now()}-${idx}-${Math.random().toString(16).slice(2, 9)}`),
-          text: newText,
-          checkpointOrder: one.checkpointOrder,
-          recommendedDate: one.recommendedDate,
-          recommendedOffsetDays: one.recommendedOffsetDays ?? null,
-          instantEnter: true,
-        }
-        return next
-      })
+      setAddedGeneratedStepIds(prev =>
+        prev.includes(stepId) ? prev : [...prev, stepId]
+      )
     } catch (error) {
       console.error('Добавление микрошага с экрана генерации:', error)
-      setAiError('Не удалось добавить шаг или получить новую подсказку')
+      setAiError('Не удалось добавить шаг')
     } finally {
       setGenRowBusyId(null)
       closeGeneratedDateEditor()
+    }
+  }
+
+  async function addAllGeneratedStepsToPlan() {
+    const goalTitle = generationInput.trim()
+    if (!goalTitle || generatedSteps.length === 0 || isAddingAllGeneratedSteps) return
+
+    const remainingSteps = generatedSteps.filter(step => !addedGeneratedStepIdSet.has(step.id))
+    if (remainingSteps.length === 0) {
+      setActiveTab('agenda')
+      return
+    }
+
+    setIsAddingAllGeneratedSteps(true)
+    setAiError('')
+
+    try {
+      const result = await saveStepsToGoal(goalTitle, remainingSteps, { suggested: true })
+      if (!result?.goal) {
+        throw new Error('save-failed')
+      }
+      setAddedGeneratedStepIds(prev => [
+        ...new Set([...prev, ...remainingSteps.map(step => step.id)]),
+      ])
+      setActiveTab('agenda')
+    } catch (error) {
+      console.error('Добавление всех сгенерированных шагов:', error)
+      setAiError('Не удалось добавить шаги в план')
+    } finally {
+      setIsAddingAllGeneratedSteps(false)
     }
   }
 
@@ -2868,6 +2837,8 @@ function App() {
                     setGenerationInput(event.target.value)
                     setShowGeneratedResult(false)
                     setGeneratedSteps([])
+                    setIsAddingAllGeneratedSteps(false)
+                    setAddedGeneratedStepIds([])
                     setAiError('')
                   }}
                   placeholder="Напишите цель…"
@@ -2902,6 +2873,9 @@ function App() {
                       : 'Разбить на микрошаги'}
                   </span>
                 </button>
+                <p className="secondary-text generation-submit-note">
+                  ИИ создаст пошаговый план, который поможет вам достичь цели
+                </p>
               </div>
 
               {isGenerating ? (
@@ -2924,69 +2898,80 @@ function App() {
 
               {!isGenerating && showGeneratedResult && generatedSteps.length > 0 ? (
                 <section ref={generationResultRef} className="generation-result-card fade-in">
-                  <div className="generation-result-head">
-                    <h2>Цель: {generationInput}</h2>
-                    <p className="secondary-text">Список предложенных шагов</p>
+                  <div className="generation-result-head generation-result-head--split">
+                    <div className="generation-result-copy">
+                      <h2>Предложенные шаги</h2>
+                      <p className="secondary-text">Выберите шаги, которые хотите добавить в план</p>
+                    </div>
+                    <button
+                      type="button"
+                      className="secondary-button generation-regenerate-button"
+                      disabled={isGenerating || !generationInput.trim()}
+                      onClick={() => handleGenerate(generatedSteps.map(step => step.text))}
+                    >
+                      <ArrowsClockwise size={18} weight="bold" aria-hidden />
+                      Сгенерировать ещё раз
+                    </button>
                   </div>
 
                   <div className="generation-result-list generation-result-list--cards">
                     {generatedSteps.map((step, index) => (
                       <article
                         key={step.id}
-                        className={`recommendation-card recommendation-card--generated ${genRowBusyId === step.id ? 'recommendation-card--busy' : ''}`}
+                        className={`generation-step-card ${genRowBusyId === step.id ? 'generation-step-card--busy' : ''} ${addedGeneratedStepIdSet.has(step.id) ? 'generation-step-card--added' : ''}`}
                         style={{ '--appear-i': index }}
                       >
-                        <div className="recommendation-card-preview recommendation-card-preview--generated">
+                        <div className="generation-step-main">
                           <p>{step.text}</p>
                         </div>
-                        <div className="recommendation-card-actions">
-                          <div className="recommendation-card-buttons">
-                            <button
-                              type="button"
-                              className={`gen-step-icon-btn gen-step-calendar-btn ${generatedDateEditor?.mode === 'generated' && generatedDateEditor?.stepId === step.id ? 'gen-step-calendar-btn--active' : ''} ${step.userPickedDate ? 'gen-step-calendar-btn--selected' : ''}`}
-                              aria-label="Выбрать дату"
-                              disabled={genRowBusyId === step.id}
-                              onClick={() =>
-                                openGeneratedDateEditor('generated', {
-                                  stepId: step.id,
-                                  value: normalizeIsoDate(step.recommendedDate),
-                                })
-                              }
-                            >
-                              <CalendarBlank size={20} weight="regular" aria-hidden />
-                            </button>
-                            <button
-                              type="button"
-                              className="gen-step-icon-btn gen-step-add-btn"
-                              aria-label="Добавить шаг в план"
-                              disabled={genRowBusyId === step.id}
-                              onClick={() => addGeneratedStepToAgendaAndRefill(step.id)}
-                            >
-                              <Plus size={20} weight="bold" aria-hidden />
-                            </button>
-                          </div>
+                        <div className="generation-step-actions">
+                          <button
+                            type="button"
+                            className={`generation-step-date-button ${generatedDateEditor?.mode === 'generated' && generatedDateEditor?.stepId === step.id ? 'generation-step-date-button--active' : ''} ${step.userPickedDate ? 'generation-step-date-button--selected' : ''}`}
+                            aria-label="Выбрать дату"
+                            disabled={genRowBusyId === step.id}
+                            onClick={() =>
+                              openGeneratedDateEditor('generated', {
+                                stepId: step.id,
+                                value: normalizeIsoDate(step.recommendedDate),
+                              })
+                            }
+                          >
+                            <CalendarBlank size={20} weight="regular" aria-hidden />
+                            <span>{step.recommendedDate ? formatRecommendedDate(step.recommendedDate) : 'Выбрать дату'}</span>
+                          </button>
+                          <button
+                            type="button"
+                            className={`generation-step-add-button ${addedGeneratedStepIdSet.has(step.id) ? 'generation-step-add-button--added' : ''}`}
+                            aria-label="Добавить шаг в план"
+                            disabled={genRowBusyId === step.id || addedGeneratedStepIdSet.has(step.id)}
+                            onClick={() => addGeneratedStepToAgendaAndRefill(step.id)}
+                          >
+                            {addedGeneratedStepIdSet.has(step.id) ? (
+                              <Check size={18} weight="bold" aria-hidden />
+                            ) : (
+                              <Plus size={18} weight="bold" aria-hidden />
+                            )}
+                            <span>{addedGeneratedStepIdSet.has(step.id) ? 'Добавлено' : 'Добавить'}</span>
+                          </button>
                         </div>
                       </article>
                     ))}
                   </div>
 
-                  <div className="generation-result-actions">
+                  <div className="generation-result-actions generation-result-actions--footer">
                     <button
                       type="button"
-                      className="secondary-button generation-result-secondary"
-                      disabled={isGenerating || !generationInput.trim()}
-                      onClick={() => handleGenerate(generatedSteps.map(step => step.text))}
+                      className="secondary-button generation-result-secondary generation-result-secondary--all"
+                      disabled={isAddingAllGeneratedSteps || allGeneratedStepsAdded}
+                      onClick={addAllGeneratedStepsToPlan}
                     >
-                      <ArrowsClockwise size={18} weight="bold" aria-hidden />
-                      Обновить {generatedSteps.length} шага
+                      <Check size={18} weight="bold" aria-hidden />
+                      {allGeneratedStepsAdded ? 'Все шаги добавлены' : 'Добавить все шаги'}
                     </button>
-                    <button
-                      type="button"
-                      className="text-button generation-result-new-goal"
-                      onClick={beginNewGoalGeneration}
-                    >
-                      Новая цель
-                    </button>
+                    <p className="secondary-text generation-result-footnote">
+                      Шаги будут добавлены в раздел «Запланировано»
+                    </p>
                   </div>
                 </section>
               ) : null}
