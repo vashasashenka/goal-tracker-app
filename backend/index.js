@@ -112,6 +112,27 @@ async function ensureSchema() {
       used_at TIMESTAMPTZ
     )
   `)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS goals (
+      id BIGINT PRIMARY KEY,
+      text TEXT NOT NULL,
+      micro_goals JSONB NOT NULL DEFAULT '[]'::jsonb,
+      category TEXT DEFAULT 'Другое',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      owner_key TEXT
+    )
+  `)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS completed_goals (
+      id BIGINT PRIMARY KEY,
+      text TEXT NOT NULL,
+      micro_goals JSONB NOT NULL DEFAULT '[]'::jsonb,
+      category TEXT DEFAULT 'Другое',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      finished_at TIMESTAMPTZ,
+      owner_key TEXT
+    )
+  `)
   await pool.query('ALTER TABLE goals ADD COLUMN IF NOT EXISTS owner_key TEXT')
   await pool.query('ALTER TABLE completed_goals ADD COLUMN IF NOT EXISTS owner_key TEXT')
   await pool.query("ALTER TABLE goals ADD COLUMN IF NOT EXISTS category TEXT DEFAULT 'Другое'")
