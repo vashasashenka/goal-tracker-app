@@ -68,8 +68,8 @@ function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmail(email))
 }
 
-function isValidResetCode(code) {
-  return new RegExp(`^\\d{${RESET_CODE_LENGTH}}$`).test(String(code || '').trim())
+function isValidResetCode(code, length = RESET_CODE_LENGTH) {
+  return new RegExp(`^\\d{${length}}$`).test(String(code || '').trim())
 }
 
 async function apiRequest(path, { method = 'GET', body, sessionToken } = {}) {
@@ -257,17 +257,6 @@ function formatRecommendedDate(dateStr, options = { day: 'numeric', month: 'shor
     .toLocaleDateString('ru-RU', options)
     .replace(/\s?г\.$/, '')
     .replace(/\./g, '')
-}
-
-function formatRecentGenerationDate(dateStr) {
-  const date = new Date(dateStr || Date.now())
-  if (Number.isNaN(date.getTime())) return 'только что'
-  return date.toLocaleString('ru-RU', {
-    day: 'numeric',
-    month: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
 }
 
 function startOfMonth(date) {
@@ -553,6 +542,8 @@ function App() {
   const [authMode, setAuthMode] = useState('login')
   const [passwordDraft, setPasswordDraft] = useState('')
   const [passwordRepeatDraft, setPasswordRepeatDraft] = useState('')
+  const [registerStage, setRegisterStage] = useState('form')
+  const [registerCodeDraft, setRegisterCodeDraft] = useState('')
   const [resetStage, setResetStage] = useState('request')
   const [resetCodeDraft, setResetCodeDraft] = useState('')
   const [resetNewPasswordDraft, setResetNewPasswordDraft] = useState('')
@@ -572,12 +563,12 @@ function App() {
   const [showGeneratedResult, setShowGeneratedResult] = useState(false)
   const [isAddingAllGeneratedSteps, setIsAddingAllGeneratedSteps] = useState(false)
   const [addedGeneratedStepIds, setAddedGeneratedStepIds] = useState([])
-  const [genCustomInput, setGenCustomInput] = useState('')
-  const [genCustomDateDraft, setGenCustomDateDraft] = useState('')
+  const [, setGenCustomInput] = useState('')
+  const [, setGenCustomDateDraft] = useState('')
   const [genRowBusyId, setGenRowBusyId] = useState(null)
   const [generatedDateEditor, setGeneratedDateEditor] = useState(null)
   const [calendarViewDate, setCalendarViewDate] = useState(() => startOfMonth(new Date()))
-  const [isAddingOwnStep, setIsAddingOwnStep] = useState(false)
+  const [, setIsAddingOwnStep] = useState(false)
   const [taskEditor, setTaskEditor] = useState(null)
   const [taskDraft, setTaskDraft] = useState('')
   const [taskDateDraft, setTaskDateDraft] = useState('')
@@ -604,11 +595,13 @@ function App() {
     Boolean(String(userName || '').trim()) &&
     isValidEmail(normalizedUserEmail)
   const canSubmitLogin = isValidEmail(emailDraft) && String(passwordDraft || '').length >= 8
-  const canSubmitRegister =
+  const canSubmitRegisterRequest =
     Boolean(String(nameDraft || '').trim()) &&
     isValidEmail(emailDraft) &&
     String(passwordDraft || '').length >= 8 &&
     passwordDraft === passwordRepeatDraft
+  const canSubmitRegisterConfirm =
+    isValidEmail(emailDraft) && isValidResetCode(registerCodeDraft, RESET_CODE_LENGTH)
   const canSubmitResetRequest = isValidEmail(emailDraft)
   const canSubmitResetConfirm =
     isValidEmail(emailDraft) &&
@@ -637,6 +630,11 @@ function App() {
     setGenRowBusyId(null)
     setGeneratedDateEditor(null)
     setIsAddingOwnStep(false)
+  }
+
+  function resetRegisterFlow() {
+    setRegisterStage('form')
+    setRegisterCodeDraft('')
   }
 
   function resetRecoveryFlow({ keepEmail = true } = {}) {
@@ -1501,78 +1499,6 @@ function App() {
     }
   }
 
-  async function addOwnMicroStepToAgenda() {
-    const goalTitle = generationInput.trim()
-    const t = genCustomInput.trim()
-    if (!goalTitle || !t || isAddingOwnStep) return
-
-    setIsAddingOwnStep(true)
-    setAiError('')
-
-    try {
-      const baseGoal =
-        findGoalByTitle(safeGoals, goalTitle) ||
-        (activeGoal && goalTitlesAlign(goalTitle, activeGoal.text) ? activeGoal : null)
-
-      if (baseGoal && hasSimilarTaskDuplicate(baseGoal, t)) {
-        setAiError('Похожий шаг уже есть в этой цели')
-        return
-      }
-
-      if (baseGoal) {
-        const microGoals = [
-          ...(baseGoal.microGoals || []),
-          buildAppendedMicroGoal(baseGoal.microGoals, {
-            id: Date.now() + Math.floor(Math.random() * 1000),
-            text: t,
-            completed: false,
-            suggested: false,
-            recommendedDate: genCustomDateDraft,
-            forceRecommendedDate: Boolean(genCustomDateDraft),
-          }),
-        ]
-        const updated = await updateGoalLocally({ ...baseGoal, microGoals })
-        const savedGoal = normalizeGoal(updated)
-        replaceGoalInState(savedGoal)
-        setCurrentGoal(savedGoal.id)
-        highlightAgendaTasks([microGoals[microGoals.length - 1]?.id])
-      } else {
-        const created = await createGoal(goalTitle)
-        if (!created) return
-        const microGoals = [
-          buildAppendedMicroGoal(created.microGoals, {
-            id: Date.now(),
-            text: t,
-            completed: false,
-            suggested: false,
-            recommendedDate: genCustomDateDraft,
-            forceRecommendedDate: Boolean(genCustomDateDraft),
-          }),
-        ]
-        const updated = await updateGoalLocally({
-          ...created,
-          text: goalTitle,
-          microGoals,
-        })
-        const savedGoal = normalizeGoal(updated)
-        if (savedGoal?.id != null) {
-          replaceGoalInState(savedGoal)
-          setCurrentGoal(savedGoal.id)
-          highlightAgendaTasks([microGoals[microGoals.length - 1]?.id])
-        }
-      }
-
-      setGenCustomInput('')
-      setGenCustomDateDraft('')
-      closeGeneratedDateEditor()
-    } catch (error) {
-      console.error('Свой микрошаг в план:', error)
-      setAiError('Не удалось добавить шаг')
-    } finally {
-      setIsAddingOwnStep(false)
-    }
-  }
-
   function beginNewGoalGeneration() {
     setShowGeneratedResult(false)
     setGeneratedSteps([])
@@ -1852,6 +1778,7 @@ function App() {
     setEmailDraft(nextEmail)
     setPasswordDraft('')
     setPasswordRepeatDraft('')
+    resetRegisterFlow()
     setAuthMode('login')
     setAuthError('')
     setAuthInfo('')
@@ -1885,7 +1812,7 @@ function App() {
     }
   }
 
-  async function submitRegister() {
+  async function submitRegisterRequest() {
     const name = String(nameDraft || '').trim()
     const email = normalizeEmail(emailDraft)
     const password = String(passwordDraft || '')
@@ -1897,7 +1824,7 @@ function App() {
     setAuthError('')
     setAuthInfo('')
     try {
-      const payload = await apiRequest('/api/auth/register', {
+      const payload = await apiRequest('/api/auth/register/request', {
         method: 'POST',
         body: {
           name,
@@ -1905,10 +1832,61 @@ function App() {
           password,
         },
       })
+      setRegisterStage('confirm')
+      setRegisterCodeDraft('')
+      setPasswordDraft('')
+      setPasswordRepeatDraft('')
+      setAuthInfo(payload?.message || 'Мы отправили код подтверждения на вашу почту.')
+    } catch (error) {
+      console.error('Запрос кода регистрации:', error)
+      setAuthError(error?.message || 'Не удалось отправить код')
+    } finally {
+      setAuthBusy(false)
+    }
+  }
+
+  async function submitRegisterConfirm() {
+    const email = normalizeEmail(emailDraft)
+    const code = String(registerCodeDraft || '').trim()
+
+    if (!isValidEmail(email) || !isValidResetCode(code, RESET_CODE_LENGTH)) return
+
+    setAuthBusy(true)
+    setAuthError('')
+    setAuthInfo('')
+    try {
+      const payload = await apiRequest('/api/auth/register/confirm', {
+        method: 'POST',
+        body: {
+          email,
+          code,
+        },
+      })
       applyAuthPayload(payload)
     } catch (error) {
-      console.error('Регистрация:', error)
-      setAuthError(error?.message || 'Не удалось создать аккаунт')
+      console.error('Подтверждение почты:', error)
+      setAuthError(error?.message || 'Не удалось подтвердить почту')
+    } finally {
+      setAuthBusy(false)
+    }
+  }
+
+  async function resendRegisterCode() {
+    const email = normalizeEmail(emailDraft)
+    if (!isValidEmail(email)) return
+
+    setAuthBusy(true)
+    setAuthError('')
+    setAuthInfo('')
+    try {
+      const payload = await apiRequest('/api/auth/register/resend', {
+        method: 'POST',
+        body: { email },
+      })
+      setAuthInfo(payload?.message || 'Мы отправили новый код подтверждения.')
+    } catch (error) {
+      console.error('Повторная отправка кода регистрации:', error)
+      setAuthError(error?.message || 'Не удалось отправить код повторно')
     } finally {
       setAuthBusy(false)
     }
@@ -1986,6 +1964,7 @@ function App() {
     setUserName('')
     setUserEmail('')
     setNameDraft('')
+    resetRegisterFlow()
     resetRecoveryFlow({ keepEmail: Boolean(nextEmail) })
     setEmailDraft(nextEmail)
     setPasswordDraft('')
@@ -2098,6 +2077,7 @@ function App() {
                   setAuthInfo('')
                   setPasswordDraft('')
                   setPasswordRepeatDraft('')
+                  resetRegisterFlow()
                   resetRecoveryFlow()
                 }}
               >
@@ -2112,6 +2092,7 @@ function App() {
                   setAuthInfo('')
                   setPasswordDraft('')
                   setPasswordRepeatDraft('')
+                  resetRegisterFlow()
                   resetRecoveryFlow()
                 }}
               >
@@ -2121,7 +2102,9 @@ function App() {
           )}
           <h1 className="screen-title">
             {authMode === 'register'
-              ? 'Регистрация'
+              ? registerStage === 'confirm'
+                ? 'Подтвердите почту'
+                : 'Регистрация'
               : authMode === 'reset'
                 ? resetStage === 'confirm'
                   ? 'Сброс пароля'
@@ -2130,7 +2113,9 @@ function App() {
           </h1>
           <p className="secondary-text onboarding-copy">
             {authMode === 'register'
-              ? 'Создайте аккаунт: имя, почта и пароль. Потом сможете входить с любого устройства.'
+              ? registerStage === 'confirm'
+                ? 'Введите 6-значный код из письма. Только после подтверждения почты аккаунт будет создан.'
+                : 'Создайте аккаунт: имя, реальная почта и пароль. Мы отправим код подтверждения на email.'
               : authMode === 'reset'
                 ? resetStage === 'confirm'
                   ? 'Введите код из письма и задайте новый пароль.'
@@ -2138,7 +2123,7 @@ function App() {
                 : 'Введите почту и пароль, чтобы открыть свои цели и историю.'}
           </p>
           <div className="onboarding-fields">
-            {authMode === 'register' && (
+            {authMode === 'register' && registerStage === 'form' && (
               <input
                 type="text"
                 className="onboarding-input"
@@ -2146,9 +2131,9 @@ function App() {
                 value={nameDraft}
                 onChange={e => setNameDraft(e.target.value)}
                 onKeyDown={e => {
-                  if (e.key === 'Enter' && canSubmitRegister) {
+                  if (e.key === 'Enter' && canSubmitRegisterRequest) {
                     e.preventDefault()
-                    submitRegister()
+                    submitRegisterRequest()
                   }
                 }}
                 autoFocus
@@ -2158,21 +2143,32 @@ function App() {
             <input
               type="email"
               className="onboarding-input"
-              placeholder="Почта"
+              placeholder={authMode === 'register' && registerStage === 'confirm' ? 'Почта подтверждения' : 'Почта'}
               value={emailDraft}
               onChange={e => setEmailDraft(e.target.value)}
               onKeyDown={e => {
-                if (e.key === 'Enter' && (authMode === 'register' ? canSubmitRegister : canSubmitLogin)) {
+                if (
+                  e.key === 'Enter' &&
+                  (authMode === 'register'
+                    ? registerStage === 'confirm'
+                      ? canSubmitRegisterConfirm
+                      : canSubmitRegisterRequest
+                    : canSubmitLogin)
+                ) {
                   e.preventDefault()
-                  if (authMode === 'register') submitRegister()
+                  if (authMode === 'register') {
+                    if (registerStage === 'confirm') submitRegisterConfirm()
+                    else submitRegisterRequest()
+                  }
                   else submitLogin()
                 }
               }}
               autoFocus={authMode !== 'register'}
               autoComplete="email"
               inputMode="email"
+              readOnly={authMode === 'register' && registerStage === 'confirm'}
             />
-            {authMode !== 'reset' && (
+            {authMode !== 'reset' && !(authMode === 'register' && registerStage === 'confirm') && (
               <input
                 type="password"
                 className="onboarding-input"
@@ -2182,17 +2178,17 @@ function App() {
                 onKeyDown={e => {
                   if (
                     e.key === 'Enter' &&
-                    (authMode === 'register' ? canSubmitRegister : canSubmitLogin)
+                    (authMode === 'register' ? canSubmitRegisterRequest : canSubmitLogin)
                   ) {
                     e.preventDefault()
-                    if (authMode === 'register') submitRegister()
+                    if (authMode === 'register') submitRegisterRequest()
                     else submitLogin()
                   }
                 }}
                 autoComplete={authMode === 'register' ? 'new-password' : 'current-password'}
               />
             )}
-            {authMode === 'register' && (
+            {authMode === 'register' && registerStage === 'form' && (
               <input
                 type="password"
                 className="onboarding-input"
@@ -2200,12 +2196,32 @@ function App() {
                 value={passwordRepeatDraft}
                 onChange={e => setPasswordRepeatDraft(e.target.value)}
                 onKeyDown={e => {
-                  if (e.key === 'Enter' && canSubmitRegister) {
+                  if (e.key === 'Enter' && canSubmitRegisterRequest) {
                     e.preventDefault()
-                    submitRegister()
+                    submitRegisterRequest()
                   }
                 }}
                 autoComplete="new-password"
+              />
+            )}
+            {authMode === 'register' && registerStage === 'confirm' && (
+              <input
+                type="text"
+                className="onboarding-input"
+                placeholder="6-значный код"
+                value={registerCodeDraft}
+                onChange={e =>
+                  setRegisterCodeDraft(e.target.value.replace(/\D/g, '').slice(0, RESET_CODE_LENGTH))
+                }
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && canSubmitRegisterConfirm) {
+                    e.preventDefault()
+                    submitRegisterConfirm()
+                  }
+                }}
+                autoFocus
+                autoComplete="one-time-code"
+                inputMode="numeric"
               />
             )}
             {authMode === 'reset' && resetStage === 'confirm' && (
@@ -2259,13 +2275,23 @@ function App() {
           {String(emailDraft || '').trim() && !isValidEmail(emailDraft) && (
             <p className="onboarding-error">Введите корректную почту</p>
           )}
-          {authMode === 'register' && String(passwordDraft || '').length > 0 && String(passwordDraft || '').length < 8 && (
+          {authMode === 'register' &&
+            registerStage === 'form' &&
+            String(passwordDraft || '').length > 0 &&
+            String(passwordDraft || '').length < 8 && (
             <p className="onboarding-error">Пароль должен быть не короче 8 символов</p>
           )}
           {authMode === 'register' &&
+            registerStage === 'form' &&
             String(passwordRepeatDraft || '').length > 0 &&
             passwordDraft !== passwordRepeatDraft && (
               <p className="onboarding-error">Пароли не совпадают</p>
+            )}
+          {authMode === 'register' &&
+            registerStage === 'confirm' &&
+            String(registerCodeDraft || '').length > 0 &&
+            !isValidResetCode(registerCodeDraft, RESET_CODE_LENGTH) && (
+              <p className="onboarding-error">Введите 6-значный код из письма</p>
             )}
           {authMode === 'reset' && resetStage === 'confirm' && String(resetCodeDraft || '').length > 0 && !isValidResetCode(resetCodeDraft) && (
             <p className="onboarding-error">Введите 6-значный код из письма</p>
@@ -2290,7 +2316,9 @@ function App() {
             disabled={
               authBusy ||
               (authMode === 'register'
-                ? !canSubmitRegister
+                ? registerStage === 'confirm'
+                  ? !canSubmitRegisterConfirm
+                  : !canSubmitRegisterRequest
                 : authMode === 'reset'
                   ? resetStage === 'confirm'
                     ? !canSubmitResetConfirm
@@ -2299,7 +2327,9 @@ function App() {
             }
             onClick={
               authMode === 'register'
-                ? submitRegister
+                ? registerStage === 'confirm'
+                  ? submitRegisterConfirm
+                  : submitRegisterRequest
                 : authMode === 'reset'
                   ? resetStage === 'confirm'
                     ? submitPasswordResetConfirm
@@ -2310,7 +2340,9 @@ function App() {
             {authBusy
               ? 'Подождите…'
               : authMode === 'register'
-                ? 'Зарегистрироваться'
+                ? registerStage === 'confirm'
+                  ? 'Подтвердить почту'
+                  : 'Отправить код'
                 : authMode === 'reset'
                   ? resetStage === 'confirm'
                     ? 'Сбросить пароль'
@@ -2327,11 +2359,37 @@ function App() {
                 setAuthInfo('')
                 setPasswordDraft('')
                 setPasswordRepeatDraft('')
+                resetRegisterFlow()
                 resetRecoveryFlow()
               }}
             >
               Забыли пароль?
             </button>
+          )}
+          {authMode === 'register' && registerStage === 'confirm' && (
+            <>
+              <button
+                type="button"
+                className="text-button auth-toggle-link"
+                onClick={resendRegisterCode}
+                disabled={authBusy || !isValidEmail(emailDraft)}
+              >
+                Отправить код ещё раз
+              </button>
+              <button
+                type="button"
+                className="text-button auth-toggle-link"
+                onClick={() => {
+                  setAuthError('')
+                  setAuthInfo('')
+                  setPasswordDraft('')
+                  setPasswordRepeatDraft('')
+                  resetRegisterFlow()
+                }}
+              >
+                Изменить почту или пароль
+              </button>
+            </>
           )}
           {authMode === 'reset' && resetStage === 'confirm' && (
             <button
@@ -2356,6 +2414,7 @@ function App() {
               setAuthInfo('')
               setPasswordDraft('')
               setPasswordRepeatDraft('')
+              resetRegisterFlow()
               resetRecoveryFlow()
             }}
           >

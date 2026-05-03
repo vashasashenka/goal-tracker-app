@@ -34,7 +34,7 @@ npm run dev
   - Single origin: `https://your-frontend.app`
   - Multiple origins: `https://a.app,https://b.app`
 - Backend port can be overridden with `PORT`.
-- Password reset via email requires SMTP settings in `backend/.env`.
+- Email confirmation and password reset require SMTP settings in `backend/.env`.
   - Required: `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`
   - If your provider needs auth: `SMTP_USER`, `SMTP_PASSWORD`
-  - Optional: `SMTP_SECURE`, `SMTP_REPLY_TO`, `PASSWORD_RESET_TTL_MINUTES`, `PASSWORD_RESET_RESEND_SECONDS`
+  - Optional: `SMTP_SECURE`, `SMTP_REPLY_TO`, `PASSWORD_RESET_TTL_MINUTES`, `PASSWORD_RESET_RESEND_SECONDS`, `EMAIL_VERIFICATION_TTL_MINUTES`, `EMAIL_VERIFICATION_RESEND_SECONDS`

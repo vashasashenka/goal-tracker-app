@@ -15,6 +15,7 @@ const { Pool } = pg
 const scrypt = promisify(scryptCallback)
 const MIN_PASSWORD_LENGTH = 8
 const PASSWORD_RESET_CODE_LENGTH = 6
+const EMAIL_VERIFICATION_CODE_LENGTH = PASSWORD_RESET_CODE_LENGTH
 const PASSWORD_RESET_TTL_MINUTES = Math.max(
   5,
   Math.trunc(Number(process.env.PASSWORD_RESET_TTL_MINUTES) || 15)
@@ -22,6 +23,16 @@ const PASSWORD_RESET_TTL_MINUTES = Math.max(
 const PASSWORD_RESET_RESEND_SECONDS = Math.max(
   30,
   Math.trunc(Number(process.env.PASSWORD_RESET_RESEND_SECONDS) || 60)
+)
+const EMAIL_VERIFICATION_TTL_MINUTES = Math.max(
+  5,
+  Math.trunc(Number(process.env.EMAIL_VERIFICATION_TTL_MINUTES) || PASSWORD_RESET_TTL_MINUTES)
+)
+const EMAIL_VERIFICATION_RESEND_SECONDS = Math.max(
+  30,
+  Math.trunc(
+    Number(process.env.EMAIL_VERIFICATION_RESEND_SECONDS) || PASSWORD_RESET_RESEND_SECONDS
+  )
 )
 const smtpHost = String(process.env.SMTP_HOST || '').trim()
 const smtpPort = Math.trunc(Number(process.env.SMTP_PORT) || 0)
@@ -89,6 +100,18 @@ async function ensureSchema() {
       used_at TIMESTAMPTZ
     )
   `)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS email_verification_codes (
+      id BIGSERIAL PRIMARY KEY,
+      email TEXT NOT NULL,
+      name TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      code_hash TEXT NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      used_at TIMESTAMPTZ
+    )
+  `)
   await pool.query('ALTER TABLE goals ADD COLUMN IF NOT EXISTS owner_key TEXT')
   await pool.query('ALTER TABLE completed_goals ADD COLUMN IF NOT EXISTS owner_key TEXT')
   await pool.query("ALTER TABLE goals ADD COLUMN IF NOT EXISTS category TEXT DEFAULT 'Другое'")
@@ -110,6 +133,9 @@ async function ensureSchema() {
   await pool.query('CREATE INDEX IF NOT EXISTS idx_user_sessions_user_id ON user_sessions(user_id)')
   await pool.query(
     'CREATE INDEX IF NOT EXISTS idx_password_reset_codes_user_id ON password_reset_codes(user_id)'
+  )
+  await pool.query(
+    'CREATE INDEX IF NOT EXISTS idx_email_verification_codes_email ON email_verification_codes(email)'
   )
   await pool.query('CREATE INDEX IF NOT EXISTS idx_goals_owner_key ON goals(owner_key)')
   await pool.query(
@@ -141,8 +167,8 @@ function isValidPassword(password) {
   return String(password || '').length >= MIN_PASSWORD_LENGTH
 }
 
-function isValidResetCode(code) {
-  return new RegExp(`^\\d{${PASSWORD_RESET_CODE_LENGTH}}$`).test(String(code || '').trim())
+function isValidResetCode(code, length = PASSWORD_RESET_CODE_LENGTH) {
+  return new RegExp(`^\\d{${length}}$`).test(String(code || '').trim())
 }
 
 function ownerKeyForUserId(userId) {
@@ -182,9 +208,10 @@ function createSessionToken() {
   return randomBytes(32).toString('hex')
 }
 
-function createResetCode() {
-  const number = randomBytes(4).readUInt32BE(0) % 10 ** PASSWORD_RESET_CODE_LENGTH
-  return String(number).padStart(PASSWORD_RESET_CODE_LENGTH, '0')
+function createNumericCode(length = PASSWORD_RESET_CODE_LENGTH) {
+  const safeLength = Math.max(4, Math.trunc(Number(length) || PASSWORD_RESET_CODE_LENGTH))
+  const number = randomBytes(4).readUInt32BE(0) % 10 ** safeLength
+  return String(number).padStart(safeLength, '0')
 }
 
 function isMailConfigured() {
@@ -198,7 +225,7 @@ function mailMisconfigured(res) {
 
   res.status(503).json({
     error:
-      'Восстановление пароля пока не настроено: заполните SMTP_HOST, SMTP_PORT, SMTP_FROM и при необходимости SMTP_USER/SMTP_PASSWORD в backend/.env',
+      'Письма для подтверждения почты и восстановления пароля пока не настроены: заполните SMTP_HOST, SMTP_PORT, SMTP_FROM и при необходимости SMTP_USER/SMTP_PASSWORD в backend/.env',
   })
   return true
 }
@@ -271,6 +298,37 @@ async function sendPasswordResetCode({ email, name, code }) {
         <p>${greeting}</p>
         <p>Вы запросили восстановление пароля в <strong>Goal Tracker</strong>.</p>
         <p>Ваш код для сброса пароля:</p>
+        <p style="font-size: 28px; font-weight: 700; letter-spacing: 6px; margin: 16px 0;">${code}</p>
+        <p>Код действует ${ttlText}.</p>
+        <p>Если это были не вы, просто проигнорируйте письмо.</p>
+      </div>
+    `,
+  })
+}
+
+async function sendEmailVerificationCode({ email, name, code }) {
+  const transport = await getMailTransport()
+  const ttlText = formatMinutes(EMAIL_VERIFICATION_TTL_MINUTES)
+  const safeName = String(name || '').trim()
+  const greeting = safeName ? `Здравствуйте, ${safeName}!` : 'Здравствуйте!'
+
+  await transport.sendMail({
+    from: smtpFrom,
+    to: email,
+    ...(smtpReplyTo ? { replyTo: smtpReplyTo } : {}),
+    subject: 'Goal Tracker: подтверждение почты',
+    text: `${greeting}
+
+Подтвердите почту в Goal Tracker.
+
+Ваш код подтверждения: ${code}
+
+Код действует ${ttlText}. Если это были не вы, просто проигнорируйте письмо.`,
+    html: `
+      <div style="font-family: Arial, sans-serif; color: #101828; line-height: 1.6;">
+        <p>${greeting}</p>
+        <p>Подтвердите почту в <strong>Goal Tracker</strong>.</p>
+        <p>Ваш код подтверждения:</p>
         <p style="font-size: 28px; font-weight: 700; letter-spacing: 6px; margin: 16px 0;">${code}</p>
         <p>Код действует ${ttlText}.</p>
         <p>Если это были не вы, просто проигнорируйте письмо.</p>
@@ -510,7 +568,7 @@ app.get('/', (req, res) => {
   res.send('Goal Tracker API is running')
 })
 
-app.post('/api/auth/register', async (req, res) => {
+app.post('/api/auth/register/request', async (req, res) => {
   const name = String(req.body?.name || '').trim()
   const email = normalizeEmail(req.body?.email)
   const password = String(req.body?.password || '')
@@ -526,8 +584,10 @@ app.post('/api/auth/register', async (req, res) => {
       .status(400)
       .json({ error: `Пароль должен быть не короче ${MIN_PASSWORD_LENGTH} символов` })
   }
+  if (mailMisconfigured(res)) return
 
   let client
+  let verificationCodeHash = ''
   try {
     await ensureSchemaReady()
     client = await pool.connect()
@@ -539,14 +599,247 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(409).json({ error: 'Аккаунт с такой почтой уже существует' })
     }
 
+    const latestCodeResult = await client.query(
+      `
+        SELECT created_at
+        FROM email_verification_codes
+        WHERE email = $1
+          AND used_at IS NULL
+          AND expires_at > NOW()
+        ORDER BY created_at DESC
+        LIMIT 1
+      `,
+      [email]
+    )
+
+    if (latestCodeResult.rows.length > 0) {
+      const createdAt = new Date(latestCodeResult.rows[0].created_at).getTime()
+      const elapsedMs = Date.now() - createdAt
+      const cooldownMs = EMAIL_VERIFICATION_RESEND_SECONDS * 1000 - elapsedMs
+
+      if (cooldownMs > 0) {
+        await client.query('ROLLBACK')
+        return res.status(429).json({
+          error: `Код уже отправлен. Попробуйте снова через ${Math.ceil(cooldownMs / 1000)} сек.`,
+        })
+      }
+    }
+
     const passwordHash = await hashPassword(password)
+    const code = createNumericCode(EMAIL_VERIFICATION_CODE_LENGTH)
+    verificationCodeHash = await hashPassword(code)
+    const expiresAt = new Date(Date.now() + EMAIL_VERIFICATION_TTL_MINUTES * 60 * 1000)
+
+    await client.query('DELETE FROM email_verification_codes WHERE email = $1', [email])
+    await client.query(
+      `
+        INSERT INTO email_verification_codes (email, name, password_hash, code_hash, expires_at)
+        VALUES ($1, $2, $3, $4, $5)
+      `,
+      [email, name, passwordHash, verificationCodeHash, expiresAt]
+    )
+
+    await client.query('COMMIT')
+
+    try {
+      await sendEmailVerificationCode({
+        email,
+        name,
+        code,
+      })
+    } catch (error) {
+      console.error('Ошибка отправки письма для подтверждения почты:', error)
+      await pool
+        .query(
+          `
+            DELETE FROM email_verification_codes
+            WHERE email = $1
+              AND code_hash = $2
+              AND used_at IS NULL
+          `,
+          [email, verificationCodeHash]
+        )
+        .catch(() => {})
+
+      return res
+        .status(500)
+        .json({ error: 'Не удалось отправить письмо с кодом. Попробуйте позже.' })
+    }
+
+    res.status(202).json({
+      message: `Код подтверждения отправлен на ${maskEmail(email)}.`,
+    })
+  } catch (error) {
+    if (client) await client.query('ROLLBACK').catch(() => {})
+    if (error?.code === '23505') {
+      return res.status(409).json({ error: 'Аккаунт с такой почтой уже существует' })
+    }
+    console.error('Ошибка отправки кода регистрации:', error)
+    res.status(500).json({ error: 'Не удалось отправить код. Попробуйте позже.' })
+  } finally {
+    client?.release()
+  }
+})
+
+app.post('/api/auth/register/resend', async (req, res) => {
+  const email = normalizeEmail(req.body?.email)
+
+  if (!isValidEmail(email)) {
+    return res.status(400).json({ error: 'Введите корректную почту' })
+  }
+  if (mailMisconfigured(res)) return
+
+  let client
+  let verificationCodeHash = ''
+  try {
+    await ensureSchemaReady()
+    client = await pool.connect()
+    await client.query('BEGIN')
+
+    const existingUser = await client.query('SELECT id FROM users WHERE email = $1 LIMIT 1', [email])
+    if (existingUser.rows.length > 0) {
+      await client.query('ROLLBACK')
+      return res.status(409).json({ error: 'Аккаунт уже подтверждён. Войдите в него.' })
+    }
+
+    const pendingResult = await client.query(
+      `
+        SELECT name, password_hash, created_at
+        FROM email_verification_codes
+        WHERE email = $1
+          AND used_at IS NULL
+        ORDER BY created_at DESC
+        LIMIT 1
+      `,
+      [email]
+    )
+
+    if (pendingResult.rows.length === 0) {
+      await client.query('ROLLBACK')
+      return res.status(404).json({ error: 'Начните регистрацию заново, чтобы получить код.' })
+    }
+
+    const createdAt = new Date(pendingResult.rows[0].created_at).getTime()
+    const elapsedMs = Date.now() - createdAt
+    const cooldownMs = EMAIL_VERIFICATION_RESEND_SECONDS * 1000 - elapsedMs
+
+    if (cooldownMs > 0) {
+      await client.query('ROLLBACK')
+      return res.status(429).json({
+        error: `Код уже отправлен. Попробуйте снова через ${Math.ceil(cooldownMs / 1000)} сек.`,
+      })
+    }
+
+    const pending = pendingResult.rows[0]
+    const code = createNumericCode(EMAIL_VERIFICATION_CODE_LENGTH)
+    verificationCodeHash = await hashPassword(code)
+    const expiresAt = new Date(Date.now() + EMAIL_VERIFICATION_TTL_MINUTES * 60 * 1000)
+
+    await client.query('DELETE FROM email_verification_codes WHERE email = $1', [email])
+    await client.query(
+      `
+        INSERT INTO email_verification_codes (email, name, password_hash, code_hash, expires_at)
+        VALUES ($1, $2, $3, $4, $5)
+      `,
+      [email, pending.name, pending.password_hash, verificationCodeHash, expiresAt]
+    )
+
+    await client.query('COMMIT')
+
+    try {
+      await sendEmailVerificationCode({
+        email,
+        name: pending.name,
+        code,
+      })
+    } catch (error) {
+      console.error('Ошибка повторной отправки кода подтверждения:', error)
+      await pool
+        .query(
+          `
+            DELETE FROM email_verification_codes
+            WHERE email = $1
+              AND code_hash = $2
+              AND used_at IS NULL
+          `,
+          [email, verificationCodeHash]
+        )
+        .catch(() => {})
+
+      return res
+        .status(500)
+        .json({ error: 'Не удалось отправить письмо с кодом. Попробуйте позже.' })
+    }
+
+    res.json({
+      message: `Новый код подтверждения отправлен на ${maskEmail(email)}.`,
+    })
+  } catch (error) {
+    if (client) await client.query('ROLLBACK').catch(() => {})
+    console.error('Ошибка повторной отправки кода регистрации:', error)
+    res.status(500).json({ error: 'Не удалось отправить код. Попробуйте позже.' })
+  } finally {
+    client?.release()
+  }
+})
+
+app.post('/api/auth/register/confirm', async (req, res) => {
+  const email = normalizeEmail(req.body?.email)
+  const code = String(req.body?.code || '').trim()
+
+  if (!isValidEmail(email)) {
+    return res.status(400).json({ error: 'Введите корректную почту' })
+  }
+  if (!isValidResetCode(code, EMAIL_VERIFICATION_CODE_LENGTH)) {
+    return res.status(400).json({ error: 'Введите 6-значный код из письма' })
+  }
+
+  let client
+  try {
+    await ensureSchemaReady()
+    client = await pool.connect()
+    await client.query('BEGIN')
+
+    const existingUser = await client.query('SELECT id FROM users WHERE email = $1 LIMIT 1', [email])
+    if (existingUser.rows.length > 0) {
+      await client.query('ROLLBACK')
+      return res.status(409).json({ error: 'Аккаунт уже существует. Войдите в него.' })
+    }
+
+    const verificationResult = await client.query(
+      `
+        SELECT id, name, password_hash, code_hash
+        FROM email_verification_codes
+        WHERE email = $1
+          AND used_at IS NULL
+          AND expires_at > NOW()
+        ORDER BY created_at DESC
+        LIMIT 1
+      `,
+      [email]
+    )
+
+    if (verificationResult.rows.length === 0) {
+      await client.query('ROLLBACK')
+      return res
+        .status(400)
+        .json({ error: 'Код истёк или не найден. Запросите новый код.' })
+    }
+
+    const verification = verificationResult.rows[0]
+    const codeOk = await verifyPassword(code, verification.code_hash)
+    if (!codeOk) {
+      await client.query('ROLLBACK')
+      return res.status(400).json({ error: 'Неверный код' })
+    }
+
     const createdUser = await client.query(
       `
         INSERT INTO users (email, name, password_hash)
         VALUES ($1, $2, $3)
         RETURNING id, name, email
       `,
-      [email, name, passwordHash]
+      [email, verification.name, verification.password_hash]
     )
 
     if (createdUser.rows.length === 0) {
@@ -555,8 +848,10 @@ app.post('/api/auth/register', async (req, res) => {
     }
 
     const user = createdUser.rows[0]
-    const ownerKey = ownerKeyForUserId(user.id)
-    await migrateLegacyOwnerKey(client, email, ownerKey)
+    await client.query('UPDATE email_verification_codes SET used_at = NOW() WHERE id = $1', [
+      verification.id,
+    ])
+    await migrateLegacyOwnerKey(client, email, ownerKeyForUserId(user.id))
 
     const sessionToken = createSessionToken()
     await client.query('INSERT INTO user_sessions (token, user_id) VALUES ($1, $2)', [
@@ -571,8 +866,8 @@ app.post('/api/auth/register', async (req, res) => {
     if (error?.code === '23505') {
       return res.status(409).json({ error: 'Аккаунт с такой почтой уже существует' })
     }
-    console.error('Ошибка регистрации:', error)
-    res.status(500).json({ error: 'Не удалось создать аккаунт' })
+    console.error('Ошибка подтверждения почты:', error)
+    res.status(500).json({ error: 'Не удалось подтвердить почту. Попробуйте позже.' })
   } finally {
     client?.release()
   }
@@ -764,7 +1059,7 @@ app.post('/api/auth/password-reset/request', async (req, res) => {
 
     await client.query('DELETE FROM password_reset_codes WHERE user_id = $1', [resetUserId])
 
-    const code = createResetCode()
+    const code = createNumericCode(PASSWORD_RESET_CODE_LENGTH)
     resetCodeHash = await hashPassword(code)
     const expiresAt = new Date(Date.now() + PASSWORD_RESET_TTL_MINUTES * 60 * 1000)
 
