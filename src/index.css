@@ -1100,10 +1100,6 @@ small,
   font-weight: 700;
 }
 
-.agenda-completed-panel {
-  display: none;
-}
-
 .agenda-settings-button {
   width: 42px;
   height: 42px;
@@ -4214,13 +4210,6 @@ small,
     background: #f8f9fc;
     border: 1px solid rgba(214, 225, 243, 0.9);
     box-shadow: 0 12px 28px rgba(49, 82, 146, 0.06);
-  }
-
-  .agenda-completed-panel {
-    display: grid;
-    margin-top: 18px;
-    padding: 18px;
-    box-shadow: none;
   }
 
   .recommendations-row {

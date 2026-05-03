@@ -15,7 +15,6 @@ import {
   X,
 } from '@phosphor-icons/react'
 import Analytics from './components/Analytics'
-import CompletedGoalsPreview from './components/CompletedGoalsPreview'
 import CompletedGoalsScreen from './components/CompletedGoalsScreen'
 import { normalizeGoalCategory, resolveGoalCreatedAt } from './utils/statistics'
 
@@ -3000,11 +2999,6 @@ function App() {
                 )}
               </div>
 
-              <CompletedGoalsPreview
-                goals={safeCompletedGoals}
-                onOpenAll={openCompletedGoalsScreen}
-                className="agenda-completed-panel"
-              />
             </aside>
           </div>
         </section>
