@@ -2611,95 +2611,98 @@ function App() {
                               className={`task-card micro-appear task-card--${visualTone} ${task.completed ? 'task-card--completed' : ''} ${highlightedTaskIds.includes(task.id) ? 'task-card--fresh' : ''}`}
                               style={{ '--appear-i': sectionIndex * 6 + index }}
                             >
-                              <div className="task-card-content-row">
+                              <div className="task-card-main">
                                 <button
                                   type="button"
-                                  className="task-card-text-button"
-                                  onClick={() => startInlineTaskEdit(task)}
+                                  className={`task-card-check ${task.completed ? 'task-card-check--done' : ''}`}
+                                  aria-label={task.completed ? 'Вернуть шаг в работу' : 'Отметить шаг выполненным'}
+                                  onClick={() => completeMicroGoal(activeGoal.id, task.id, !task.completed)}
                                 >
-                                  {inlineEditTaskId === task.id ? (
-                                    <span className="task-inline-edit">
-                                      <input
-                                        type="text"
-                                        className="task-inline-input"
-                                        value={inlineEditText}
-                                        onChange={e => setInlineEditText(e.target.value)}
-                                        autoFocus
-                                        onKeyDown={e => {
-                                          if (e.key === 'Enter') {
-                                            e.preventDefault()
-                                            saveInlineTaskEdit(activeGoal.id, task.id)
-                                          } else if (e.key === 'Escape') {
-                                            e.preventDefault()
-                                            cancelInlineTaskEdit()
-                                          }
-                                        }}
-                                      />
-                                      <span className="task-inline-actions">
-                                        <button
-                                          type="button"
-                                          className="text-button task-inline-action"
-                                          disabled={inlineEditBusy || !inlineEditText.trim()}
-                                          onClick={e => {
-                                            e.stopPropagation()
-                                            saveInlineTaskEdit(activeGoal.id, task.id)
-                                          }}
-                                        >
-                                          Сохранить
-                                        </button>
-                                        <button
-                                          type="button"
-                                          className="text-button task-inline-action task-inline-action--muted"
-                                          disabled={inlineEditBusy}
-                                          onClick={e => {
-                                            e.stopPropagation()
-                                            cancelInlineTaskEdit()
-                                          }}
-                                        >
-                                          Отмена
-                                        </button>
-                                      </span>
-                                    </span>
-                                  ) : (
-                                    <strong>{task.text}</strong>
-                                  )}
+                                  {task.completed ? '✓' : ''}
                                 </button>
 
-                                <div className="task-card-side">
-                                  {task.completed ? (
-                                    <span className="task-date-badge task-date-badge--done">
-                                      <CalendarBlank size={14} weight="regular" aria-hidden />
-                                      {task.completedAt
-                                        ? formatCompactDateTime(task.completedAt)
-                                        : 'Выполнено'}
-                                    </span>
-                                  ) : (
+                                <div className="task-card-body">
+                                  <div className="task-card-content-row">
                                     <button
                                       type="button"
-                                      className={`task-date-button ${showWarning ? 'task-date-button--overdue' : ''}`}
-                                      aria-label="Выбрать дату для шага"
-                                      onClick={() =>
-                                        openGeneratedDateEditor('task', {
-                                          goalId: activeGoal.id,
-                                          taskId: task.id,
-                                          value: normalizeIsoDate(task.recommendedDate),
-                                        })
-                                      }
+                                      className="task-card-text-button"
+                                      onClick={() => startInlineTaskEdit(task)}
                                     >
-                                      <CalendarBlank size={14} weight="regular" aria-hidden />
-                                      {task.recommendedDate
-                                        ? formatRecommendedDate(task.recommendedDate)
-                                        : 'Без даты'}
+                                      {inlineEditTaskId === task.id ? (
+                                        <span className="task-inline-edit">
+                                          <input
+                                            type="text"
+                                            className="task-inline-input"
+                                            value={inlineEditText}
+                                            onChange={e => setInlineEditText(e.target.value)}
+                                            autoFocus
+                                            onKeyDown={e => {
+                                              if (e.key === 'Enter') {
+                                                e.preventDefault()
+                                                saveInlineTaskEdit(activeGoal.id, task.id)
+                                              } else if (e.key === 'Escape') {
+                                                e.preventDefault()
+                                                cancelInlineTaskEdit()
+                                              }
+                                            }}
+                                          />
+                                          <span className="task-inline-actions">
+                                            <button
+                                              type="button"
+                                              className="text-button task-inline-action"
+                                              disabled={inlineEditBusy || !inlineEditText.trim()}
+                                              onClick={e => {
+                                                e.stopPropagation()
+                                                saveInlineTaskEdit(activeGoal.id, task.id)
+                                              }}
+                                            >
+                                              Сохранить
+                                            </button>
+                                            <button
+                                              type="button"
+                                              className="text-button task-inline-action task-inline-action--muted"
+                                              disabled={inlineEditBusy}
+                                              onClick={e => {
+                                                e.stopPropagation()
+                                                cancelInlineTaskEdit()
+                                              }}
+                                            >
+                                              Отмена
+                                            </button>
+                                          </span>
+                                        </span>
+                                      ) : (
+                                        <strong>{task.text}</strong>
+                                      )}
                                     </button>
-                                  )}
 
-                                  <button
-                                    type="button"
-                                    className={`task-status-action ${task.completed ? 'task-status-action--completed' : ''}`}
-                                    onClick={() => completeMicroGoal(activeGoal.id, task.id, !task.completed)}
-                                  >
-                                    {task.completed ? 'Вернуть' : 'Готово'}
-                                  </button>
+                                    {task.completed ? (
+                                      <span className="task-date-badge task-date-badge--done">
+                                        <CalendarBlank size={14} weight="regular" aria-hidden />
+                                        {task.completedAt
+                                          ? formatCompactDateTime(task.completedAt)
+                                          : 'Выполнено'}
+                                      </span>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        className={`task-date-button ${showWarning ? 'task-date-button--overdue' : ''}`}
+                                        aria-label="Выбрать дату для шага"
+                                        onClick={() =>
+                                          openGeneratedDateEditor('task', {
+                                            goalId: activeGoal.id,
+                                            taskId: task.id,
+                                            value: normalizeIsoDate(task.recommendedDate),
+                                          })
+                                        }
+                                      >
+                                        <CalendarBlank size={14} weight="regular" aria-hidden />
+                                        {task.recommendedDate
+                                          ? formatRecommendedDate(task.recommendedDate)
+                                          : 'Без даты'}
+                                      </button>
+                                    )}
+                                  </div>
                                 </div>
                               </div>
 

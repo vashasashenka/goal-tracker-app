@@ -695,9 +695,22 @@ small,
   box-shadow: 0 10px 28px rgba(49, 82, 146, 0.08);
 }
 
+.task-card-main {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.task-card-body {
+  flex: 1;
+  min-width: 0;
+  display: block;
+}
+
 .task-card-content-row {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 14px;
   flex-wrap: wrap;
@@ -722,12 +735,31 @@ small,
   line-height: 1.35;
 }
 
-.task-card-side {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 10px;
+.task-card-check {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 2px solid rgba(47, 111, 237, 0.28);
+  background: #fff;
+  color: transparent;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  display: grid;
+  place-items: center;
   flex-shrink: 0;
+  cursor: pointer;
+  transition: transform 0.16s ease, background 0.16s ease, color 0.16s ease, border-color 0.16s ease;
+}
+
+.task-card-check:active {
+  transform: scale(0.94);
+}
+
+.task-card-check--done {
+  background: var(--success);
+  border-color: var(--success);
+  color: #fff;
 }
 
 .task-inline-edit {
@@ -765,26 +797,11 @@ small,
   font-weight: 500;
 }
 
-.task-status-action {
-  border: none;
-  background: transparent;
-  padding: 0;
-  color: var(--accent);
-  font-size: 13px;
-  font-weight: 700;
-  line-height: 1.2;
-  cursor: pointer;
-}
-
-.task-status-action--completed {
-  color: #4c6d58;
-}
-
 .task-card-warning {
   font-size: 12px;
   line-height: 1.35;
   color: #b42318;
-  margin-left: 0;
+  margin-left: 46px;
 }
 
 .task-empty-cta {
