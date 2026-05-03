@@ -1795,12 +1795,6 @@ small,
   gap: 6px;
 }
 
-.generation-result-head--split {
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: start;
-  gap: 16px;
-}
-
 .generation-result-head h2 {
   margin: 0;
   font-size: 18px;
@@ -1810,11 +1804,6 @@ small,
 
 .generation-result-head p {
   margin: 0;
-}
-
-.generation-result-copy {
-  display: grid;
-  gap: 6px;
 }
 
 .generation-result-list {
@@ -1870,23 +1859,6 @@ small,
   margin: 0;
   font-size: 14px;
   line-height: 1.45;
-}
-
-.generation-regenerate-button {
-  width: auto;
-  min-height: 48px;
-  margin-top: 0;
-  padding: 0 20px;
-  border-radius: 18px;
-  border: 1px solid rgba(214, 225, 243, 0.96);
-  background: #fff;
-  color: var(--text);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  font-weight: 600;
-  box-shadow: none;
 }
 
 .generation-step-card {
@@ -4040,10 +4012,6 @@ small,
     min-height: 212px;
   }
 
-  .generation-result-head--split {
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-
   .recent-generations--compact {
     height: auto;
   }
@@ -4083,14 +4051,6 @@ small,
 
   .generation-result-head h2 {
     font-size: 20px;
-  }
-
-  .generation-result-head--split {
-    grid-template-columns: 1fr;
-  }
-
-  .generation-regenerate-button {
-    width: 100%;
   }
 
   .generation-step-card {

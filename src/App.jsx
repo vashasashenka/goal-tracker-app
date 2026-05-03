@@ -2898,20 +2898,9 @@ function App() {
 
               {!isGenerating && showGeneratedResult && generatedSteps.length > 0 ? (
                 <section ref={generationResultRef} className="generation-result-card fade-in">
-                  <div className="generation-result-head generation-result-head--split">
-                    <div className="generation-result-copy">
-                      <h2>Предложенные шаги</h2>
-                      <p className="secondary-text">Выберите шаги, которые хотите добавить в план</p>
-                    </div>
-                    <button
-                      type="button"
-                      className="secondary-button generation-regenerate-button"
-                      disabled={isGenerating || !generationInput.trim()}
-                      onClick={() => handleGenerate(generatedSteps.map(step => step.text))}
-                    >
-                      <ArrowsClockwise size={18} weight="bold" aria-hidden />
-                      Сгенерировать ещё раз
-                    </button>
+                  <div className="generation-result-head">
+                    <h2>Предложенные шаги</h2>
+                    <p className="secondary-text">Выберите шаги, которые хотите добавить в план</p>
                   </div>
 
                   <div className="generation-result-list generation-result-list--cards">
