@@ -1,19 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeft,
-  Briefcase,
+  ArrowsClockwise,
   CalendarBlank,
   CaretDown,
+  CaretLeft,
   CaretRight,
   ChartBar,
   Gear,
-  GraduationCap,
-  Leaf,
-  Lightning,
   ListBullets,
   Plus,
   Sparkle,
-  Target,
   X,
 } from '@phosphor-icons/react'
 import Analytics from './components/Analytics'
@@ -60,6 +57,7 @@ const GENERATION_INPUT_LIMIT = 300
 /** Сколько подсказок ИИ держим на экране (после добавления одной — дозаполняем до этого числа). */
 const AI_SUGGEST_SLOTS = 3
 const CHECKPOINT_GAP_DAYS = [3, 4, 7, 7, 14, 14, 21]
+const CALENDAR_WEEKDAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
 
 function normalizeEmail(email) {
   return String(email || '').trim().toLowerCase()
@@ -271,6 +269,45 @@ function formatRecentGenerationDate(dateStr) {
   })
 }
 
+function startOfMonth(date) {
+  return new Date(date.getFullYear(), date.getMonth(), 1)
+}
+
+function addMonths(date, amount) {
+  return new Date(date.getFullYear(), date.getMonth() + amount, 1)
+}
+
+function startOfWeekMonday(date) {
+  const day = date.getDay()
+  const diff = day === 0 ? -6 : 1 - day
+  return addDays(date, diff)
+}
+
+function buildCalendarDays(viewDate) {
+  const monthStart = startOfMonth(viewDate)
+  const gridStart = startOfWeekMonday(monthStart)
+  const todayKey = toIsoDate(new Date())
+
+  return Array.from({ length: 42 }, (_, index) => {
+    const date = addDays(gridStart, index)
+    const iso = toIsoDate(date)
+    return {
+      iso,
+      label: date.getDate(),
+      isCurrentMonth: date.getMonth() === monthStart.getMonth(),
+      isToday: iso === todayKey,
+    }
+  })
+}
+
+function formatCalendarMonth(date) {
+  const value = date.toLocaleDateString('ru-RU', {
+    month: 'long',
+    year: 'numeric',
+  })
+  return value.charAt(0).toUpperCase() + value.slice(1)
+}
+
 function isRecommendedDatePassed(task) {
   if (!task || task.completed) return false
   const parsed = parseIsoDate(task.recommendedDate)
@@ -318,14 +355,6 @@ function getAgendaTaskTone(task, todayKey) {
   if (dateKey < todayKey) return 'overdue'
   if (dateKey === todayKey) return 'today'
   return 'planned'
-}
-
-function GoalCategoryIcon({ category, size = 22 }) {
-  const p = { size, weight: 'regular', 'aria-hidden': true }
-  if (category === 'Учёба') return <GraduationCap {...p} />
-  if (category === 'Работа') return <Briefcase {...p} />
-  if (category === 'Личное') return <Leaf {...p} />
-  return <Target {...p} />
 }
 
 function getRecommendationCacheKey(goal, sourceText = '') {
@@ -538,12 +567,13 @@ function App() {
     readScopedRecentGenerations(initialStorageScope)
   )
   const [isGenerating, setIsGenerating] = useState(false)
-  const [isSavingGeneratedPlan, setIsSavingGeneratedPlan] = useState(false)
+  const [isRefreshingRecommendations, setIsRefreshingRecommendations] = useState(false)
   const [showGeneratedResult, setShowGeneratedResult] = useState(false)
   const [genCustomInput, setGenCustomInput] = useState('')
   const [genCustomDateDraft, setGenCustomDateDraft] = useState('')
   const [genRowBusyId, setGenRowBusyId] = useState(null)
   const [generatedDateEditor, setGeneratedDateEditor] = useState(null)
+  const [calendarViewDate, setCalendarViewDate] = useState(() => startOfMonth(new Date()))
   const [isAddingOwnStep, setIsAddingOwnStep] = useState(false)
   const [taskEditor, setTaskEditor] = useState(null)
   const [taskDraft, setTaskDraft] = useState('')
@@ -555,8 +585,6 @@ function App() {
   const [recommendationsCache, setRecommendationsCache] = useState({})
   const [highlightedTaskIds, setHighlightedTaskIds] = useState([])
   const [showGoalMenu, setShowGoalMenu] = useState(false)
-  const [selectedRecommendationId, setSelectedRecommendationId] = useState(null)
-  const generatedDateInputRef = useRef(null)
   const generationInputRef = useRef(null)
   const generationResultRef = useRef(null)
   const agendaTasksRef = useRef(null)
@@ -598,7 +626,6 @@ function App() {
     setGenerationInput('')
     setGeneratedSteps([])
     setShowGeneratedResult(false)
-    setIsSavingGeneratedPlan(false)
     setGenCustomInput('')
     setGenCustomDateDraft('')
     setIsGenerating(false)
@@ -616,21 +643,6 @@ function App() {
       setEmailDraft('')
     }
   }
-
-  useEffect(() => {
-    if (!generatedDateEditor) return
-    const frame = requestAnimationFrame(() => {
-      const input = generatedDateInputRef.current
-      if (!input) return
-      input.focus()
-      try {
-        input.showPicker?.()
-      } catch {
-        /* noop */
-      }
-    })
-    return () => cancelAnimationFrame(frame)
-  }, [generatedDateEditor])
 
   useEffect(() => {
     if (activeTab !== 'generate' || showGeneratedResult) return
@@ -901,10 +913,7 @@ function App() {
     return (Array.isArray(recommendations) ? recommendations : []).slice(0, AI_SUGGEST_SLOTS)
   }, [activeGoal?.text, recommendations, recommendationsSource])
 
-  const selectedRecommendation = useMemo(() => {
-    if (!selectedRecommendationId) return null
-    return agendaRecommendations.find(item => item.id === selectedRecommendationId) || null
-  }, [agendaRecommendations, selectedRecommendationId])
+  const calendarDays = useMemo(() => buildCalendarDays(calendarViewDate), [calendarViewDate])
 
   useEffect(() => {
     function handlePointerDown(event) {
@@ -916,7 +925,6 @@ function App() {
     function handleEscape(event) {
       if (event.key === 'Escape') {
         setShowGoalMenu(false)
-        setSelectedRecommendationId(null)
       }
     }
 
@@ -930,28 +938,18 @@ function App() {
 
   useEffect(() => {
     setShowGoalMenu(false)
-    setSelectedRecommendationId(null)
   }, [activeTab, showProfile, activeGoalId])
-
-  useEffect(() => {
-    if (!selectedRecommendationId) return
-    if (!selectedRecommendation) {
-      setSelectedRecommendationId(null)
-    }
-  }, [selectedRecommendationId, selectedRecommendation])
 
   function setCurrentGoal(goalId) {
     setActiveGoalId(goalId)
     localStorage.setItem(activeGoalStorageKey, String(goalId))
     setRecommendations([])
     setShowGoalMenu(false)
-    setSelectedRecommendationId(null)
   }
 
   function openNewGoalFlow() {
     beginNewGoalGeneration()
     setShowGoalMenu(false)
-    setSelectedRecommendationId(null)
     setActiveTab('generate')
     setShowProfile(false)
   }
@@ -984,13 +982,6 @@ function App() {
     if (uniqueIds.length === 0) return
     setHighlightedTaskIds(uniqueIds)
   }
-
-  const utilization = useMemo(() => {
-    const count = agendaMicroTasks.length
-    if (count >= 6) return 'Высокая'
-    if (count >= 3) return 'Средняя'
-    return 'Низкая'
-  }, [agendaMicroTasks])
 
   function hasSimilarTaskDuplicate(goal, text) {
     const normalized = normalizeTaskText(text)
@@ -1059,7 +1050,6 @@ function App() {
     if (!goal) return
 
     const normalizedDate = normalizeIsoDate(nextDate)
-    if (!normalizedDate) return
 
     const otherMicroGoals = (goal.microGoals || []).filter(item => item.id !== taskId)
     const microGoals = (goal.microGoals || []).map(item =>
@@ -1210,14 +1200,35 @@ function App() {
   }, [])
 
   function openGeneratedDateEditor(mode, payload = {}) {
+    const normalizedValue = normalizeIsoDate(payload.value)
+    const baseDate = parseIsoDate(normalizedValue) || new Date()
+    setCalendarViewDate(startOfMonth(baseDate))
     setGeneratedDateEditor({
       mode,
+      value: normalizedValue,
       ...payload,
     })
   }
 
   function closeGeneratedDateEditor() {
     setGeneratedDateEditor(null)
+  }
+
+  function applyCalendarDate(nextDate) {
+    if (!generatedDateEditor) return
+    if (generatedDateEditor.mode === 'generated') {
+      updateGeneratedStepDate(generatedDateEditor.stepId, nextDate)
+    } else if (generatedDateEditor.mode === 'recommendation') {
+      updateRecommendationDate(generatedDateEditor.recommendationId, nextDate)
+    } else if (generatedDateEditor.mode === 'task') {
+      void saveTaskDate(generatedDateEditor.goalId, generatedDateEditor.taskId, nextDate)
+    } else {
+      updateOwnGeneratedDate(nextDate)
+    }
+  }
+
+  function clearCalendarDate() {
+    applyCalendarDate('')
   }
 
   async function saveStepsToGoal(goalTitle, steps, { suggested = true } = {}) {
@@ -1329,17 +1340,26 @@ function App() {
     }
   }
 
-  const requestPreviewSuggestions = useCallback(async sourceText => {
+  const requestPreviewSuggestions = useCallback(async (sourceText, { force = false } = {}) => {
     const trimmed = String(sourceText || '').trim()
     if (!trimmed) return
     setRecommendationsSource(trimmed)
     const cacheKey = getRecommendationCacheKey(activeGoal, trimmed)
     const cached = cacheKey ? recommendationsCache[cacheKey] : null
-    if (Array.isArray(cached) && cached.length > 0) {
+    if (!force && Array.isArray(cached) && cached.length > 0) {
       setRecommendations(cached.map(item => ({ ...item })))
       return
     }
     try {
+      if (force) {
+        setRecommendations(
+          Array.from({ length: AI_SUGGEST_SLOTS }, (_, index) => ({
+            id: `ph-rec-refresh-${Date.now()}-${index}`,
+            text: '',
+            placeholder: true,
+          }))
+        )
+      }
       const existingTexts = (activeGoal?.microGoals || []).map(item => item.text)
       const clean = await fetchPreviewMicrogoals(trimmed, existingTexts, AI_SUGGEST_SLOTS)
       const planned = planSuggestedMicroGoals(clean, activeGoal)
@@ -1354,6 +1374,16 @@ function App() {
       setRecommendations([])
     }
   }, [activeGoal, recommendationsCache, storeRecommendationsInCache])
+
+  async function refreshAgendaRecommendations() {
+    if (!activeGoal?.text || isRefreshingRecommendations) return
+    setIsRefreshingRecommendations(true)
+    try {
+      await requestPreviewSuggestions(activeGoal.text, { force: true })
+    } finally {
+      setIsRefreshingRecommendations(false)
+    }
+  }
 
   useEffect(() => {
     if (!activeGoal) {
@@ -1407,7 +1437,6 @@ function App() {
       const saved = await updateGoalLocally(updatedGoal)
       replaceGoalInState(saved)
       highlightAgendaTasks([nextMicroGoal.id])
-      setSelectedRecommendationId(null)
       await refillRecommendationSlotInPlace(item.id, saved)
     } catch (error) {
       console.error('Рекомендация в план:', error)
@@ -1456,35 +1485,6 @@ function App() {
       setShowGeneratedResult(false)
     } finally {
       setIsGenerating(false)
-    }
-  }
-
-  async function addGeneratedResultToPlan() {
-    const goalTitle = generationInput.trim()
-    if (!goalTitle || generatedSteps.length === 0 || isSavingGeneratedPlan) return
-
-    setIsSavingGeneratedPlan(true)
-    setAiError('')
-
-    try {
-      const result = await saveStepsToGoal(goalTitle, generatedSteps, { suggested: true })
-      if (!result?.goal) {
-        throw new Error('save-failed')
-      }
-      if (result.addedIds.length === 0) {
-        setAiError('Похожие шаги уже есть в этой цели')
-      }
-      setActiveTab('agenda')
-    } catch (error) {
-      console.error('Добавление результата генерации в план:', error)
-      const message = error?.message
-      setAiError(
-        message && message !== 'failed' && message !== 'save-failed'
-          ? message
-          : 'Не удалось добавить шаги в план'
-      )
-    } finally {
-      setIsSavingGeneratedPlan(false)
     }
   }
 
@@ -1563,7 +1563,6 @@ function App() {
   function beginNewGoalGeneration() {
     setShowGeneratedResult(false)
     setGeneratedSteps([])
-    setIsSavingGeneratedPlan(false)
     setGenerationInput('')
     setGenCustomInput('')
     setGenCustomDateDraft('')
@@ -1571,7 +1570,6 @@ function App() {
     closeGeneratedDateEditor()
     setIsAddingOwnStep(false)
     setAiError('')
-    setSelectedRecommendationId(null)
   }
 
   function updateGeneratedStepDate(stepId, nextDate) {
@@ -1592,7 +1590,6 @@ function App() {
 
   function updateRecommendationDate(itemId, nextDate) {
     const normalizedDate = normalizeIsoDate(nextDate)
-    if (!normalizedDate) return
 
     setRecommendations(prev => {
       const nextRecommendations = prev.map(item =>
@@ -1600,7 +1597,7 @@ function App() {
           ? {
               ...item,
               recommendedDate: normalizedDate,
-              userPickedDate: true,
+              userPickedDate: Boolean(normalizedDate),
             }
           : item
       )
@@ -2470,9 +2467,6 @@ function App() {
               <h1>План</h1>
               <small className="screen-header-sub screen-header-sub--agenda">
                 <span>{today}</span>
-                <span className="screen-header-separator">·</span>
-                <Lightning size={15} weight="fill" aria-hidden />
-                <span>{utilization} продуктивность</span>
               </small>
             </div>
             <div className="agenda-header-actions">
@@ -2517,10 +2511,6 @@ function App() {
                   </button>
                 ) : (
                   <div className="goal-summary-main">
-                    <span className="goal-summary-icon" aria-hidden="true">
-                      <GoalCategoryIcon category={activeGoal.category} size={28} />
-                    </span>
-
                     <div className="goal-summary-content">
                       <div className="goal-selector-shell" ref={goalMenuRef}>
                         <button
@@ -2652,98 +2642,95 @@ function App() {
                               className={`task-card micro-appear task-card--${visualTone} ${task.completed ? 'task-card--completed' : ''} ${highlightedTaskIds.includes(task.id) ? 'task-card--fresh' : ''}`}
                               style={{ '--appear-i': sectionIndex * 6 + index }}
                             >
-                              <div className="task-card-main">
+                              <div className="task-card-content-row">
                                 <button
                                   type="button"
-                                  className={`task-card-check ${task.completed ? 'task-card-check--done' : ''}`}
-                                  aria-label={task.completed ? 'Вернуть шаг в работу' : 'Отметить шаг выполненным'}
-                                  onClick={() => completeMicroGoal(activeGoal.id, task.id, !task.completed)}
+                                  className="task-card-text-button"
+                                  onClick={() => startInlineTaskEdit(task)}
                                 >
-                                  {task.completed ? '✓' : ''}
+                                  {inlineEditTaskId === task.id ? (
+                                    <span className="task-inline-edit">
+                                      <input
+                                        type="text"
+                                        className="task-inline-input"
+                                        value={inlineEditText}
+                                        onChange={e => setInlineEditText(e.target.value)}
+                                        autoFocus
+                                        onKeyDown={e => {
+                                          if (e.key === 'Enter') {
+                                            e.preventDefault()
+                                            saveInlineTaskEdit(activeGoal.id, task.id)
+                                          } else if (e.key === 'Escape') {
+                                            e.preventDefault()
+                                            cancelInlineTaskEdit()
+                                          }
+                                        }}
+                                      />
+                                      <span className="task-inline-actions">
+                                        <button
+                                          type="button"
+                                          className="text-button task-inline-action"
+                                          disabled={inlineEditBusy || !inlineEditText.trim()}
+                                          onClick={e => {
+                                            e.stopPropagation()
+                                            saveInlineTaskEdit(activeGoal.id, task.id)
+                                          }}
+                                        >
+                                          Сохранить
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="text-button task-inline-action task-inline-action--muted"
+                                          disabled={inlineEditBusy}
+                                          onClick={e => {
+                                            e.stopPropagation()
+                                            cancelInlineTaskEdit()
+                                          }}
+                                        >
+                                          Отмена
+                                        </button>
+                                      </span>
+                                    </span>
+                                  ) : (
+                                    <strong>{task.text}</strong>
+                                  )}
                                 </button>
 
-                                <div className="task-card-body">
-                                  <div className="task-card-content-row">
+                                <div className="task-card-side">
+                                  {task.completed ? (
+                                    <span className="task-date-badge task-date-badge--done">
+                                      <CalendarBlank size={14} weight="regular" aria-hidden />
+                                      {task.completedAt
+                                        ? formatCompactDateTime(task.completedAt)
+                                        : 'Выполнено'}
+                                    </span>
+                                  ) : (
                                     <button
                                       type="button"
-                                      className="task-card-text-button"
-                                      onClick={() => startInlineTaskEdit(task)}
+                                      className={`task-date-button ${showWarning ? 'task-date-button--overdue' : ''}`}
+                                      aria-label="Выбрать дату для шага"
+                                      onClick={() =>
+                                        openGeneratedDateEditor('task', {
+                                          goalId: activeGoal.id,
+                                          taskId: task.id,
+                                          value: normalizeIsoDate(task.recommendedDate),
+                                        })
+                                      }
                                     >
-                                      {inlineEditTaskId === task.id ? (
-                                        <span className="task-inline-edit">
-                                          <input
-                                            type="text"
-                                            className="task-inline-input"
-                                            value={inlineEditText}
-                                            onChange={e => setInlineEditText(e.target.value)}
-                                            autoFocus
-                                            onKeyDown={e => {
-                                              if (e.key === 'Enter') {
-                                                e.preventDefault()
-                                                saveInlineTaskEdit(activeGoal.id, task.id)
-                                              } else if (e.key === 'Escape') {
-                                                e.preventDefault()
-                                                cancelInlineTaskEdit()
-                                              }
-                                            }}
-                                          />
-                                          <span className="task-inline-actions">
-                                            <button
-                                              type="button"
-                                              className="text-button task-inline-action"
-                                              disabled={inlineEditBusy || !inlineEditText.trim()}
-                                              onClick={e => {
-                                                e.stopPropagation()
-                                                saveInlineTaskEdit(activeGoal.id, task.id)
-                                              }}
-                                            >
-                                              Сохранить
-                                            </button>
-                                            <button
-                                              type="button"
-                                              className="text-button task-inline-action task-inline-action--muted"
-                                              disabled={inlineEditBusy}
-                                              onClick={e => {
-                                                e.stopPropagation()
-                                                cancelInlineTaskEdit()
-                                              }}
-                                            >
-                                              Отмена
-                                            </button>
-                                          </span>
-                                        </span>
-                                      ) : (
-                                        <strong>{task.text}</strong>
-                                      )}
+                                      <CalendarBlank size={14} weight="regular" aria-hidden />
+                                      {task.recommendedDate
+                                        ? formatRecommendedDate(task.recommendedDate)
+                                        : 'Без даты'}
                                     </button>
+                                  )}
 
-                                    {task.completed ? (
-                                      <span className="task-date-badge task-date-badge--done">
-                                        <CalendarBlank size={14} weight="regular" aria-hidden />
-                                        {task.completedAt
-                                          ? formatCompactDateTime(task.completedAt)
-                                          : 'Выполнено'}
-                                      </span>
-                                    ) : (
-                                      <button
-                                        type="button"
-                                        className={`task-date-button ${showWarning ? 'task-date-button--overdue' : ''}`}
-                                        aria-label="Выбрать дату для шага"
-                                        onClick={() =>
-                                          openGeneratedDateEditor('task', {
-                                            goalId: activeGoal.id,
-                                            taskId: task.id,
-                                            value: normalizeIsoDate(task.recommendedDate),
-                                          })
-                                        }
-                                      >
-                                        <CalendarBlank size={14} weight="regular" aria-hidden />
-                                        {task.recommendedDate
-                                          ? formatRecommendedDate(task.recommendedDate)
-                                          : 'Без даты'}
-                                      </button>
-                                    )}
-                                  </div>
+                                  <button
+                                    type="button"
+                                    className={`task-status-action ${task.completed ? 'task-status-action--completed' : ''}`}
+                                    onClick={() => completeMicroGoal(activeGoal.id, task.id, !task.completed)}
+                                  >
+                                    {task.completed ? 'Вернуть' : 'Готово'}
+                                  </button>
                                 </div>
                               </div>
 
@@ -2772,7 +2759,24 @@ function App() {
             </div>
 
             <aside className="agenda-column agenda-column--side" ref={recommendationsRef}>
-              <h2 className="section-h2-tight">Рекомендации</h2>
+              <div className="section-heading-row section-heading-row--recommendations">
+                <h2 className="section-h2-tight">Рекомендации</h2>
+                <button
+                  type="button"
+                  className="text-button recommendations-refresh-button"
+                  aria-label="Обновить рекомендации"
+                  disabled={!activeGoal || isRefreshingRecommendations}
+                  onClick={refreshAgendaRecommendations}
+                >
+                  <ArrowsClockwise
+                    size={18}
+                    weight="bold"
+                    aria-hidden
+                    className={isRefreshingRecommendations ? 'spin' : ''}
+                  />
+                  <span>Обновить</span>
+                </button>
+              </div>
               <p className="secondary-text section-subline">Идеи шагов для вашей цели</p>
               <div className="recommendations-row">
                 {agendaRecommendations.length === 0 ? (
@@ -2796,16 +2800,12 @@ function App() {
                         className={`recommendation-card ${item.instantEnter ? 'micro-appear-instant' : 'micro-appear'}`}
                         style={item.instantEnter ? undefined : { '--appear-i': index }}
                       >
-                        <button
-                          type="button"
-                          className="recommendation-card-preview"
-                          onClick={() => setSelectedRecommendationId(item.id)}
-                        >
+                        <div className="recommendation-card-preview">
                           <div className="recommendation-icon">
                             <Sparkle size={22} weight="regular" aria-hidden />
                           </div>
                           <p>{item.text}</p>
-                        </button>
+                        </div>
                         <div className="recommendation-card-actions">
                           <div className="recommendation-card-buttons">
                             <button
@@ -2870,7 +2870,7 @@ function App() {
                     setGeneratedSteps([])
                     setAiError('')
                   }}
-                  placeholder="Например: Изучить английский язык для общения"
+                  placeholder="Напишите цель…"
                 />
                 <div className="generation-input-meta">
                   <span className="secondary-text" />
@@ -2883,10 +2883,24 @@ function App() {
                   type="button"
                   className="primary-button generation-submit-button"
                   disabled={isGenerating || !generationInput.trim()}
-                  onClick={() => handleGenerate()}
+                  onClick={() =>
+                    handleGenerate(
+                      showGeneratedResult && generatedSteps.length > 0
+                        ? generatedSteps.map(step => step.text)
+                        : []
+                    )
+                  }
                 >
-                  <Sparkle size={18} weight="fill" aria-hidden />
-                  <span>Разбить на шаги</span>
+                  {showGeneratedResult && generatedSteps.length > 0 ? (
+                    <ArrowsClockwise size={18} weight="bold" aria-hidden />
+                  ) : (
+                    <Sparkle size={18} weight="fill" aria-hidden />
+                  )}
+                  <span>
+                    {showGeneratedResult && generatedSteps.length > 0
+                      ? 'Разбить ещё раз'
+                      : 'Разбить на микрошаги'}
+                  </span>
                 </button>
               </div>
 
@@ -2897,7 +2911,6 @@ function App() {
                   aria-live="polite"
                 >
                   <div className="generation-result-head">
-                    <span className="generation-result-badge">Генерация</span>
                     <h2>Собираем шаги для вашей цели</h2>
                     <p className="secondary-text">Подбираем понятный стартовый план.</p>
                   </div>
@@ -2912,87 +2925,74 @@ function App() {
               {!isGenerating && showGeneratedResult && generatedSteps.length > 0 ? (
                 <section ref={generationResultRef} className="generation-result-card fade-in">
                   <div className="generation-result-head">
-                    <span className="generation-result-badge">Результат</span>
                     <h2>Цель: {generationInput}</h2>
-                    <p className="secondary-text">Ниже стартовые шаги. Их можно сразу добавить в план.</p>
+                    <p className="secondary-text">Список предложенных шагов</p>
                   </div>
 
-                  <ol className="generation-result-list">
+                  <div className="generation-result-list generation-result-list--cards">
                     {generatedSteps.map((step, index) => (
-                      <li key={step.id} className="generation-result-item">
-                        <span className="generation-result-index">{index + 1}.</span>
-                        <span>{step.text}</span>
-                      </li>
+                      <article
+                        key={step.id}
+                        className={`recommendation-card recommendation-card--generated ${genRowBusyId === step.id ? 'recommendation-card--busy' : ''}`}
+                        style={{ '--appear-i': index }}
+                      >
+                        <div className="recommendation-card-preview recommendation-card-preview--generated">
+                          <p>{step.text}</p>
+                        </div>
+                        <div className="recommendation-card-actions">
+                          <div className="recommendation-card-buttons">
+                            <button
+                              type="button"
+                              className={`gen-step-icon-btn gen-step-calendar-btn ${generatedDateEditor?.mode === 'generated' && generatedDateEditor?.stepId === step.id ? 'gen-step-calendar-btn--active' : ''} ${step.userPickedDate ? 'gen-step-calendar-btn--selected' : ''}`}
+                              aria-label="Выбрать дату"
+                              disabled={genRowBusyId === step.id}
+                              onClick={() =>
+                                openGeneratedDateEditor('generated', {
+                                  stepId: step.id,
+                                  value: normalizeIsoDate(step.recommendedDate),
+                                })
+                              }
+                            >
+                              <CalendarBlank size={20} weight="regular" aria-hidden />
+                            </button>
+                            <button
+                              type="button"
+                              className="gen-step-icon-btn gen-step-add-btn"
+                              aria-label="Добавить шаг в план"
+                              disabled={genRowBusyId === step.id}
+                              onClick={() => addGeneratedStepToAgendaAndRefill(step.id)}
+                            >
+                              <Plus size={20} weight="bold" aria-hidden />
+                            </button>
+                          </div>
+                        </div>
+                      </article>
                     ))}
-                  </ol>
+                  </div>
 
-                  <button
-                    type="button"
-                    className="primary-button generation-result-button"
-                    disabled={isSavingGeneratedPlan}
-                    onClick={addGeneratedResultToPlan}
-                  >
-                    {isSavingGeneratedPlan ? 'Добавляем в план…' : 'Добавить в план'}
-                  </button>
+                  <div className="generation-result-actions">
+                    <button
+                      type="button"
+                      className="secondary-button generation-result-secondary"
+                      disabled={isGenerating || !generationInput.trim()}
+                      onClick={() => handleGenerate(generatedSteps.map(step => step.text))}
+                    >
+                      <ArrowsClockwise size={18} weight="bold" aria-hidden />
+                      Обновить {generatedSteps.length} шага
+                    </button>
+                    <button
+                      type="button"
+                      className="text-button generation-result-new-goal"
+                      onClick={beginNewGoalGeneration}
+                    >
+                      Новая цель
+                    </button>
+                  </div>
                 </section>
               ) : null}
             </div>
           </div>
         </section>
-      )}
-
-      {selectedRecommendation && (
-        <div className="modal-backdrop" onClick={() => setSelectedRecommendationId(null)}>
-          <section
-            className="task-modal recommendation-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Рекомендация"
-            onClick={e => e.stopPropagation()}
-          >
-            <div className="task-modal-head">
-              <h2>Рекомендация</h2>
-              <button
-                type="button"
-                className="icon-button"
-                aria-label="Закрыть"
-                onClick={() => setSelectedRecommendationId(null)}
-              >
-                <X size={20} weight="regular" aria-hidden />
-              </button>
-            </div>
-
-            <div className="recommendation-modal-body">
-              <span className="recommendation-modal-badge">Идея для текущей цели</span>
-              <p className="recommendation-modal-text">{selectedRecommendation.text}</p>
-              <p className="secondary-text recommendation-modal-note">
-                Сразу добавьте шаг в план или сначала выберите дату.
-              </p>
-            </div>
-
-            <div className="task-modal-actions">
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={() =>
-                  openGeneratedDateEditor('recommendation', {
-                    recommendationId: selectedRecommendation.id,
-                    value: normalizeIsoDate(selectedRecommendation.recommendedDate),
-                  })
-                }
-              >
-                Выбрать дату
-              </button>
-              <button
-                type="button"
-                className="primary-button"
-                onClick={() => addRecommendationToActiveGoal(selectedRecommendation)}
-              >
-                Добавить в план
-              </button>
-            </div>
-          </section>
-        </div>
       )}
 
       {generatedDateEditor && (
@@ -3005,33 +3005,50 @@ function App() {
             onClick={e => e.stopPropagation()}
           >
             <div className="date-picker-modal-head">
-              <h2>Дата</h2>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="Предыдущий месяц"
+                onClick={() => setCalendarViewDate(prev => addMonths(prev, -1))}
+              >
+                <CaretLeft size={18} weight="bold" aria-hidden />
+              </button>
+              <h2>{formatCalendarMonth(calendarViewDate)}</h2>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="Следующий месяц"
+                onClick={() => setCalendarViewDate(prev => addMonths(prev, 1))}
+              >
+                <CaretRight size={18} weight="bold" aria-hidden />
+              </button>
               <button type="button" className="icon-button" aria-label="Закрыть" onClick={closeGeneratedDateEditor}>
                 <X size={20} weight="regular" aria-hidden />
               </button>
             </div>
-            <div className="task-modal-field">
-              <label htmlFor="generated-date-input" className="task-modal-label">
-                Выберите дату
-              </label>
-              <input
-                ref={generatedDateInputRef}
-                id="generated-date-input"
-                type="date"
-                className="task-date-input"
-                value={generatedDateEditor.value || ''}
-                onChange={e => {
-                  if (generatedDateEditor.mode === 'generated') {
-                    updateGeneratedStepDate(generatedDateEditor.stepId, e.target.value)
-                  } else if (generatedDateEditor.mode === 'recommendation') {
-                    updateRecommendationDate(generatedDateEditor.recommendationId, e.target.value)
-                  } else if (generatedDateEditor.mode === 'task') {
-                    saveTaskDate(generatedDateEditor.goalId, generatedDateEditor.taskId, e.target.value)
-                  } else {
-                    updateOwnGeneratedDate(e.target.value)
-                  }
-                }}
-              />
+            <div className="calendar-shell">
+              <div className="calendar-weekdays" aria-hidden="true">
+                {CALENDAR_WEEKDAYS.map(day => (
+                  <span key={day} className="calendar-weekday">
+                    {day}
+                  </span>
+                ))}
+              </div>
+              <div className="calendar-grid">
+                {calendarDays.map(day => (
+                  <button
+                    key={day.iso}
+                    type="button"
+                    className={`calendar-day ${day.isCurrentMonth ? '' : 'calendar-day--outside'} ${day.isToday ? 'calendar-day--today' : ''} ${normalizeIsoDate(generatedDateEditor.value) === day.iso ? 'calendar-day--selected' : ''}`}
+                    onClick={() => applyCalendarDate(day.iso)}
+                  >
+                    {day.label}
+                  </button>
+                ))}
+              </div>
+              <button type="button" className="text-button calendar-clear-button" onClick={clearCalendarDate}>
+                Очистить
+              </button>
             </div>
           </section>
         </div>
