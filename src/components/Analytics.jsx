@@ -436,14 +436,9 @@ function getGoalDurationDays(goal) {
   return Math.max(1, Math.round((end.getTime() - start.getTime()) / MS_PER_DAY) + 1)
 }
 
-function Analytics({ goals, completedGoals, onClearHistory }) {
+function Analytics({ goals, completedGoals }) {
   const [range, setRange] = useState('month')
   const [activeActivityKey, setActiveActivityKey] = useState('')
-  const [activityView, setActivityView] = useState('day')
-  const [screenMode, setScreenMode] = useState('stats')
-  const [selectedCompletedGoalId, setSelectedCompletedGoalId] = useState('')
-  const [detailBackTarget, setDetailBackTarget] = useState('stats')
-  const [archiveFilter, setArchiveFilter] = useState('all')
 
   const statGoals = useMemo(
     () => [
@@ -452,84 +447,33 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
     ],
     [goals, completedGoals]
   )
-  const completedGoalArchive = useMemo(
-    () =>
-      completedGoals
-        .map(goal => normalizeGoalForStats(goal, { completed: true }))
-        .sort((a, b) => getCompletedGoalSortTime(b) - getCompletedGoalSortTime(a)),
-    [completedGoals]
-  )
 
-  const filteredGoals = useMemo(() => filterGoals(statGoals, range), [statGoals, range])
   const rangeBounds = useMemo(() => getRangeBounds(range, statGoals), [range, statGoals])
   const rangeCaption = useMemo(() => getRangeCaption(range, rangeBounds), [range, rangeBounds])
-
   const microProgress = useMemo(
     () => getMicroProgressForScopedGoals(statGoals, rangeBounds),
     [rangeBounds, statGoals]
   )
 
-  const completionKeysForStrip = useMemo(() => {
-    const keys = new Set()
-    for (const goal of statGoals) {
-      for (const step of goal.steps || []) {
-        if (!step.completed) continue
-        const key = getMicroStepActivityDateKey(step)
-        if (key) keys.add(key)
-      }
-    }
-    return keys
-  }, [statGoals])
-
-  const microStreak = useMemo(() => getMicroStreakDays(statGoals), [statGoals])
-  const weekStrip = useMemo(
-    () => buildLastWeekStrip(new Date(), completionKeysForStrip),
-    [completionKeysForStrip]
+  const activityView = useMemo(
+    () => (range === 'all' ? 'month' : range === 'year' ? 'week' : 'day'),
+    [range]
   )
+
   const activityEntries = useMemo(
     () => buildActivityEntries(statGoals, rangeBounds, activityView),
     [activityView, rangeBounds, statGoals]
   )
 
-  const maxMicroDay = useMemo(
+  const maxActivityCount = useMemo(
     () => activityEntries.reduce((max, item) => Math.max(max, item.count), 0),
     [activityEntries]
   )
 
-  const avgMicro = useMemo(
-    () => getAvgMicroPerDayInBounds(statGoals, rangeBounds),
-    [rangeBounds, statGoals]
-  )
-
-  const barPct = useMemo(() => getMicroBarPercent(avgMicro, maxMicroDay), [avgMicro, maxMicroDay])
-  const recentCompleted = useMemo(() => getRecentCompleted(filteredGoals), [filteredGoals])
-  const bestMicroDay = useMemo(
-    () => getBestWeekdayMicroFromGoals(statGoals, rangeBounds),
-    [rangeBounds, statGoals]
-  )
-
-  const insights = useMemo(
-    () =>
-      generateInsights({
-        bestMicroDay,
-        avgMicro,
-        microStreak,
-        microProgress,
-      }).slice(0, 3),
-    [avgMicro, bestMicroDay, microProgress, microStreak]
-  )
-
-  const availableActivityViews = useMemo(
-    () => ACTIVITY_VIEW_OPTIONS[range] || ACTIVITY_VIEW_OPTIONS.month,
-    [range]
-  )
-
-  useEffect(() => {
-    const defaultView =
-      range === 'all' ? 'month' : range === 'year' ? 'week' : 'day'
-    const allowedIds = availableActivityViews.map(option => option.id)
-    setActivityView(current => (allowedIds.includes(current) ? current : defaultView))
-  }, [availableActivityViews, range])
+  const activityScale = useMemo(() => {
+    const top = Math.max(3, maxActivityCount)
+    return Array.from({ length: top + 1 }, (_, index) => top - index)
+  }, [maxActivityCount])
 
   useEffect(() => {
     if (activityEntries.length === 0) {
@@ -550,272 +494,44 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
     () => activityEntries.find(item => item.key === activeActivityKey) || null,
     [activityEntries, activeActivityKey]
   )
-  const selectedCompletedGoal = useMemo(
-    () => completedGoalArchive.find(goal => goal.id === selectedCompletedGoalId) || null,
-    [completedGoalArchive, selectedCompletedGoalId]
-  )
-  const filteredCompletedGoalArchive = useMemo(
-    () => filterCompletedGoalsForArchive(completedGoalArchive, archiveFilter),
-    [archiveFilter, completedGoalArchive]
-  )
 
-  const activeActivityDetails = useMemo(
-    () =>
-      [...(activeActivityEntry?.details || [])].sort((a, b) => {
-        if (a.timeSort !== b.timeSort) return a.timeSort - b.timeSort
-        return String(a.title || '').localeCompare(String(b.title || ''), 'ru')
-      }),
-    [activeActivityEntry]
-  )
-
-  const activityScale = useMemo(() => {
-    const top = Math.max(3, maxMicroDay)
-    return Array.from({ length: top + 1 }, (_, index) => top - index)
-  }, [maxMicroDay])
-
-  const latestCompletedGoal = recentCompleted[0] || null
-  const latestCompletedCount = latestCompletedGoal
-    ? (latestCompletedGoal.steps || []).filter(step => step.completed).length
-    : 0
-  const latestCompletedTotal = latestCompletedGoal?.steps?.length || 0
-  const selectedCompletedGoalCount = selectedCompletedGoal?.steps?.filter(step => step.completed).length || 0
-  const selectedCompletedGoalDuration = selectedCompletedGoal ? getGoalDurationDays(selectedCompletedGoal) : null
-
-  const hasDailyData = activityEntries.some(item => item.count > 0)
-  const hasAnyGoals = statGoals.length > 0
-  const daysInRange = countDaysInclusive(rangeBounds)
-  const avgValueLabel = daysInRange > 0 ? `${avgMicro.toFixed(1).replace('.', ',')} шага/день` : '—'
-  const activityModeLabel =
-    activityView === 'month' ? 'По месяцам' : activityView === 'week' ? 'По неделям' : 'По дням'
+  const hasActivity = activityEntries.some(item => item.count > 0)
   const activityTitle =
-    activityView === 'month' ? 'Активность по месяцам' : activityView === 'week' ? 'Активность по неделям' : 'Активность по дням'
-  const activityEmptyDetailText =
     activityView === 'month'
-      ? 'За выбранный месяц пока нет завершённых шагов.'
+      ? 'Активность по месяцам'
       : activityView === 'week'
-        ? 'За выбранную неделю пока нет завершённых шагов.'
-        : 'За выбранный день пока нет завершённых шагов.'
+        ? 'Активность по неделям'
+        : 'Активность по дням'
+
   const activityChartStyle = {
     '--activity-columns': String(Math.max(activityEntries.length, 1)),
     '--activity-gap':
       activityView === 'month'
-        ? '14px'
+        ? '12px'
         : activityView === 'week'
           ? activityEntries.length > 24
             ? '6px'
-            : '10px'
+            : '9px'
           : activityEntries.length > 20
             ? '6px'
             : '8px',
     '--activity-bar-width':
       activityView === 'month'
-        ? '18px'
+        ? '16px'
         : activityView === 'week'
           ? activityEntries.length > 24
-            ? '7px'
-            : '9px'
+            ? '9px'
+            : '11px'
           : activityEntries.length > 20
-            ? '8px'
-            : '10px',
-  }
-
-  useEffect(() => {
-    if (screenMode !== 'detail') return
-    if (selectedCompletedGoal) return
-    setScreenMode(detailBackTarget === 'archive' ? 'archive' : 'stats')
-  }, [detailBackTarget, screenMode, selectedCompletedGoal])
-
-  function openCompletedGoal(goalId, backTarget = 'stats') {
-    if (!goalId) return
-    setSelectedCompletedGoalId(goalId)
-    setDetailBackTarget(backTarget)
-    setScreenMode('detail')
-  }
-
-  if (screenMode === 'detail' && selectedCompletedGoal) {
-    return (
-      <section className="screen screen--journal journal-screen goal-journal-screen">
-        <header className="screen-header">
-          <button
-            type="button"
-            className="text-button text-button--with-icon"
-            onClick={() => setScreenMode(detailBackTarget === 'archive' ? 'archive' : 'stats')}
-          >
-            <ArrowLeft size={18} weight="regular" aria-hidden />
-            Назад
-          </button>
-          <div className="screen-header-copy">
-            <h1 className="screen-title-with-icon">
-              <span aria-hidden="true">{getGoalEmoji(selectedCompletedGoal.category)}</span>
-              <span>Журнал цели</span>
-            </h1>
-            <p className="secondary-text journal-subtitle">Просмотр завершённой цели</p>
-          </div>
-          <div />
-        </header>
-
-        <article className="card goal-journal-hero">
-          <div className="goal-journal-hero-head">
-            <div className="goal-journal-title-row">
-              <span className="goal-journal-emoji" aria-hidden="true">
-                {getGoalEmoji(selectedCompletedGoal.category)}
-              </span>
-              <div>
-                <h2 className="goal-journal-title">{selectedCompletedGoal.title}</h2>
-                <p className="secondary-text goal-journal-meta">
-                  Завершено: {formatDashboardDate(selectedCompletedGoal.completedAt)}
-                </p>
-              </div>
-            </div>
-            <span className="goal-journal-status">Завершено</span>
-          </div>
-
-          <div className="goal-journal-progress-head">
-            <span>Общий прогресс</span>
-            <strong>100%</strong>
-          </div>
-          <div className="goal-journal-progress-track" aria-hidden="true">
-            <span style={{ width: '100%' }} />
-          </div>
-          <p className="secondary-text goal-journal-progress-copy">
-            Выполнено {selectedCompletedGoalCount} из {selectedCompletedGoal.steps.length} шагов
-          </p>
-        </article>
-
-        <section className="goal-journal-section">
-          <h2 className="journal-section-title journal-section-title--inline">Выполненные микрошаги</h2>
-          <div className="goal-journal-step-list">
-            {selectedCompletedGoal.steps.map(step => (
-              <article key={step.id} className="goal-journal-step-row">
-                <span className="goal-journal-step-check" aria-hidden="true">
-                  ✓
-                </span>
-                <div className="goal-journal-step-main">
-                  <strong>{step.title}</strong>
-                </div>
-                <span className="goal-journal-step-time">{formatStepTimeForJournal(step)}</span>
-              </article>
-            ))}
-          </div>
-        </section>
-
-        <section className="goal-journal-section">
-          <h2 className="journal-section-title journal-section-title--inline">Итоги</h2>
-          <div className="goal-journal-summary-grid">
-            <article className="card goal-journal-summary-card">
-              <span className="goal-journal-summary-label">Начато</span>
-              <strong>{formatDashboardDate(selectedCompletedGoal.createdAt)}</strong>
-            </article>
-            <article className="card goal-journal-summary-card">
-              <span className="goal-journal-summary-label">Завершено</span>
-              <strong>{formatDashboardDate(selectedCompletedGoal.completedAt)}</strong>
-            </article>
-            <article className="card goal-journal-summary-card">
-              <span className="goal-journal-summary-label">Длительность</span>
-              <strong>
-                {selectedCompletedGoalDuration
-                  ? `${selectedCompletedGoalDuration} ${pluralize(selectedCompletedGoalDuration, ['день', 'дня', 'дней'])}`
-                  : '—'}
-              </strong>
-            </article>
-          </div>
-        </section>
-      </section>
-    )
-  }
-
-  if (screenMode === 'archive') {
-    return (
-      <section className="screen screen--journal journal-screen completed-goals-screen">
-        <header className="screen-header">
-          <button
-            type="button"
-            className="text-button text-button--with-icon"
-            onClick={() => setScreenMode('stats')}
-          >
-            <ArrowLeft size={18} weight="regular" aria-hidden />
-            Назад
-          </button>
-          <div className="screen-header-copy">
-            <h1 className="screen-title-with-icon">
-              <span aria-hidden="true">🏆</span>
-              <span>Завершённые цели</span>
-            </h1>
-            <p className="secondary-text journal-subtitle">Все ваши завершённые цели</p>
-          </div>
-          <div />
-        </header>
-
-        <div className="completed-goals-filter-row" role="tablist" aria-label="Фильтр завершённых целей">
-          {ARCHIVE_FILTER_OPTIONS.map(option => (
-            <button
-              key={option.id}
-              type="button"
-              className={`stats-filter-chip ${archiveFilter === option.id ? 'stats-filter-chip--active' : ''}`}
-              onClick={() => setArchiveFilter(option.id)}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-
-        {filteredCompletedGoalArchive.length === 0 ? (
-          <div className="stats-empty-block goal-archive-empty">
-            <strong>Пока нет завершённых целей</strong>
-            <p className="secondary-text">Когда вы завершите первую цель, она появится здесь.</p>
-          </div>
-        ) : (
-          <div className="completed-goals-list">
-            {filteredCompletedGoalArchive.map(goal => {
-              const stepCount = goal.steps.length
-              return (
-                <button
-                  key={goal.id}
-                  type="button"
-                  className="completed-goal-row"
-                  onClick={() => openCompletedGoal(goal.id, 'archive')}
-                >
-                  <span className="completed-goal-row-icon" aria-hidden="true">
-                    {getGoalEmoji(goal.category)}
-                  </span>
-                  <span className="completed-goal-row-main">
-                    <strong>{goal.title}</strong>
-                    <span className="secondary-text">
-                      {stepCount} {pluralize(stepCount, ['шаг', 'шага', 'шагов'])} · завершено{' '}
-                      {formatDashboardDate(goal.completedAt)}
-                    </span>
-                  </span>
-                  <span className="completed-goal-row-side">
-                    <strong>100%</strong>
-                    <span className="completed-goal-row-progress" aria-hidden="true">
-                      <span />
-                    </span>
-                  </span>
-                  <CaretRight size={18} weight="bold" aria-hidden />
-                </button>
-              )
-            })}
-          </div>
-        )}
-
-        {completedGoalArchive.length > 0 ? (
-          <article className="card completed-goals-celebration">
-            <strong>Отличная работа!</strong>
-            <p className="secondary-text">
-              Вы завершили {completedGoalArchive.length}{' '}
-              {pluralize(completedGoalArchive.length, ['цель', 'цели', 'целей'])}. Продолжайте в том же духе.
-            </p>
-          </article>
-        ) : null}
-      </section>
-    )
+            ? '9px'
+            : '11px',
   }
 
   return (
     <section className="screen screen--journal journal-screen stats-screen">
       <header className="screen-header stats-screen-header">
-        <div>
-          <h1>Статистика выполнения целей</h1>
+        <div className="screen-header-copy">
+          <h1>Статистика</h1>
           <p className="secondary-text stats-screen-copy">
             Микрошаги и прогресс по выбранному периоду
           </p>
@@ -836,20 +552,21 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
           ))}
         </div>
 
-        <div className="stats-range-row">
-          <span className="stats-range-pill">
+        <div className="stats-range-row stats-range-row--desktop">
+          <div className="stats-range-pill">
             <span className="stats-range-pill-icon" aria-hidden="true">
               <CalendarBlank size={16} weight="regular" />
             </span>
-            {rangeCaption}
-          </span>
+            <span>{rangeCaption}</span>
+            <CaretRight size={16} weight="bold" aria-hidden />
+          </div>
         </div>
       </div>
 
-      <div className="stats-summary-grid">
+      <div className="stats-overview-grid">
         <article className="card stats-card stats-card--progress">
           <div className="stats-card-head">
-            <h2 className="stats-card-title">Общий прогресс</h2>
+            <h2 className="stats-card-title">Прогресс</h2>
           </div>
           <div className="stats-progress-block">
             <div className="stats-progress-ring" style={{ '--progress': `${microProgress.percent}%` }}>
@@ -858,241 +575,105 @@ function Analytics({ goals, completedGoals, onClearHistory }) {
               </div>
             </div>
             <div className="stats-progress-text">
-              <span className="secondary-text">Выполнено</span>
               <strong>
                 {microProgress.completed} из {microProgress.total}
               </strong>
-              <small>{formatMicroCount(microProgress.total)} в целях периода</small>
+              <small>микрошагов в целях периода</small>
             </div>
-          </div>
-        </article>
-
-        <article className="card stats-card">
-          <div className="stats-card-head">
-            <h2 className="stats-card-title">Серия дней</h2>
-          </div>
-          <div className="stats-streak-main">
-            <span className="stats-big-number">{microStreak}</span>
-            <span className="secondary-text stats-streak-suffix">
-              {microStreak > 0 ? 'день подряд' : 'пока без серии'}
-            </span>
-          </div>
-          <div className="stats-streak-week" aria-hidden="true">
-            {weekStrip.map(day => (
-              <div key={day.key} className="stats-streak-day">
-                <span className={`stats-streak-dot ${day.on ? 'stats-streak-dot--on' : ''}`} />
-                <span className="stats-streak-dow">{day.label}</span>
-              </div>
-            ))}
-          </div>
-          <p className="secondary-text stats-card-foot">
-            День засчитывается, если отмечен микрошаг и есть дата выполнения или рекомендованная дата.
-          </p>
-        </article>
-
-        <article className="card stats-card">
-          <div className="stats-card-head">
-            <h2 className="stats-card-title">Средний прогресс</h2>
-          </div>
-          <div className="stats-avg-head">
-            <span className="type-accent-number stats-avg-pct">{barPct}%</span>
-            <p className="secondary-text stats-avg-sub">к лучшему дню в периоде</p>
-          </div>
-          <div className="stats-avg-bar" aria-hidden="true">
-            <span style={{ width: `${barPct}%` }} />
-          </div>
-          <div className="secondary-text stats-card-foot stats-card-foot--stacked">
-            <span>В среднем: {avgValueLabel}</span>
-            <span>Лучший день: {maxMicroDay > 0 ? formatStepCount(maxMicroDay) : '—'}</span>
           </div>
         </article>
       </div>
 
-      <article className="card stats-panel stats-panel--activity">
+      <article className="card stats-panel stats-panel--activity stats-panel--simple">
         <div className="stats-card-head stats-card-head--activity">
           <h2 className="stats-card-title">{activityTitle}</h2>
-          {availableActivityViews.length > 1 ? (
-            <div className="stats-view-toggle" role="tablist" aria-label="Детализация активности">
-              {availableActivityViews.map(option => (
-                <button
-                  key={option.id}
-                  type="button"
-                  className={`stats-view-toggle-button ${activityView === option.id ? 'stats-view-toggle-button--active' : ''}`}
-                  onClick={() => setActivityView(option.id)}
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
-          ) : null}
         </div>
 
-        {!hasDailyData ? (
-          <p className="secondary-text stats-empty-text">
-            Здесь появится активность, когда вы начнёте отмечать микрошаги выполненными.
-          </p>
+        {!hasActivity ? (
+          <div className="stats-empty-block">
+            <strong>Пока нет активности</strong>
+            <p className="secondary-text">Когда вы начнёте завершать микрошаги, здесь появится график.</p>
+          </div>
         ) : (
-          <div className="stats-activity-layout">
-            <div className="stats-activity-chart">
-              <div className="stats-activity-plot">
-                <div className="stats-activity-axis" aria-hidden="true">
-                  {activityScale.map(value => (
-                    <span key={value}>{value}</span>
+          <div className="stats-activity-chart stats-activity-chart--full">
+            <div className="stats-activity-plot">
+              <div className="stats-activity-axis" aria-hidden="true">
+                {activityScale.map(value => (
+                  <span key={value}>{value}</span>
+                ))}
+              </div>
+
+              <div className="stats-activity-bars-shell">
+                {activityScale
+                  .filter(value => value > 0)
+                  .map(value => (
+                    <span
+                      key={value}
+                      className="stats-activity-gridline"
+                      style={{ bottom: `${(value / activityScale[0]) * 100}%` }}
+                      aria-hidden="true"
+                    />
                   ))}
-                </div>
 
-                <div className="stats-activity-bars-shell">
-                  {activityScale
-                    .filter(value => value > 0)
-                    .map(value => (
-                      <span
-                        key={value}
-                        className="stats-activity-gridline"
-                        style={{ bottom: `${(value / activityScale[0]) * 100}%` }}
-                        aria-hidden="true"
-                      />
-                    ))}
+                <div
+                  className={`stats-activity-bars stats-activity-bars--${activityView}`}
+                  style={activityChartStyle}
+                >
+                  {activityEntries.map(item => {
+                    const selected = item.key === activeActivityEntry?.key
+                    const height =
+                      item.count > 0
+                        ? `${Math.max(18, (item.count / activityScale[0]) * 186)}px`
+                        : '10px'
 
-                  <div
-                    className={`stats-activity-bars stats-activity-bars--${activityView}`}
-                    style={activityChartStyle}
-                  >
-                    {activityEntries.map(item => {
-                      const selected = item.key === activeActivityEntry?.key
-                      const height = item.count > 0 ? `${(item.count / activityScale[0]) * 100}%` : '16px'
-
-                      return (
-                        <button
-                          key={item.key}
-                          type="button"
-                          className={`stats-activity-day ${selected ? 'stats-activity-day--selected' : ''} stats-activity-day--${activityView} ${item.count === 0 ? 'stats-activity-day--empty' : ''}`}
-                          onMouseEnter={() => setActiveActivityKey(item.key)}
-                          onFocus={() => setActiveActivityKey(item.key)}
-                          onClick={() => setActiveActivityKey(item.key)}
-                          aria-pressed={selected}
-                        >
-                          <div className="stats-activity-bar-wrap">
-                            {selected && item.count > 0 && (
-                              <span className="stats-activity-count-badge">{formatStepCount(item.count)}</span>
-                            )}
-                            <span
-                              className={`stats-activity-bar ${item.count === 0 ? 'stats-activity-bar--empty' : ''}`}
-                              style={{ height }}
-                              aria-hidden="true"
-                            />
-                          </div>
-                          <span className="stats-activity-label">
-                            <span className="stats-activity-date">{item.showLabel ? item.label : ''}</span>
-                            {item.subLabel ? <span className="stats-activity-subdate">{item.showLabel ? item.subLabel : ''}</span> : null}
-                          </span>
-                        </button>
-                      )
-                    })}
-                  </div>
+                    return (
+                      <button
+                        key={item.key}
+                        type="button"
+                        className={`stats-activity-day ${selected ? 'stats-activity-day--selected' : ''} stats-activity-day--${activityView} ${item.count === 0 ? 'stats-activity-day--empty' : ''}`}
+                        onMouseEnter={() => setActiveActivityKey(item.key)}
+                        onFocus={() => setActiveActivityKey(item.key)}
+                        onClick={() => setActiveActivityKey(item.key)}
+                        aria-pressed={selected}
+                      >
+                        <div className="stats-activity-bar-wrap">
+                          {selected ? (
+                            <span className="stats-activity-tooltip">
+                              <span>{item.heading}</span>
+                              <strong>{formatStepCount(item.count)}</strong>
+                            </span>
+                          ) : null}
+                          <span
+                            className={`stats-activity-bar ${item.count === 0 ? 'stats-activity-bar--empty' : ''}`}
+                            style={{ height }}
+                            aria-hidden="true"
+                          />
+                        </div>
+                        <span className="stats-activity-label">
+                          <span className="stats-activity-date">{item.showLabel ? item.label : ''}</span>
+                          {item.subLabel ? (
+                            <span className="stats-activity-subdate">{item.showLabel ? item.subLabel : ''}</span>
+                          ) : null}
+                        </span>
+                      </button>
+                    )
+                  })}
                 </div>
               </div>
             </div>
-
-            <aside className="stats-activity-detail">
-              <div className="stats-activity-detail-head">
-                <h3>
-                  {activeActivityEntry
-                    ? `${activeActivityEntry.heading} · ${formatStepCount(activeActivityEntry.count)}`
-                    : 'Нет активности'}
-                </h3>
-                <span className="stats-detail-pill">{activityModeLabel}</span>
-              </div>
-
-              {activeActivityDetails.length === 0 ? (
-                <p className="secondary-text stats-empty-text">{activityEmptyDetailText}</p>
-              ) : (
-                <div className="stats-activity-detail-list">
-                  {activeActivityDetails.map(item => (
-                    <div key={item.id} className="stats-activity-detail-row">
-                      <span className="stats-activity-detail-check" aria-hidden="true">
-                        ✓
-                      </span>
-                      <div className="stats-activity-detail-main">
-                        <strong>{item.title}</strong>
-                        <span className="stats-activity-detail-meta">{item.goalTitle}</span>
-                      </div>
-                      <span className="stats-activity-detail-time">{item.timeLabel}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </aside>
           </div>
         )}
+
+        <div className="stats-activity-footer">
+          <div className="stats-range-pill stats-range-pill--mobile">
+            <span className="stats-range-pill-icon" aria-hidden="true">
+              <CalendarBlank size={16} weight="regular" />
+            </span>
+            <span>{rangeCaption}</span>
+            <CaretRight size={16} weight="bold" aria-hidden />
+          </div>
+        </div>
       </article>
-
-      <div className="stats-bottom-grid">
-        <article className="card stats-panel stats-panel--latest">
-          <div className="stats-card-head">
-            <h2 className="stats-card-title">Последние выполненные цели</h2>
-          </div>
-
-          {!latestCompletedGoal ? (
-            <div className="stats-empty-block">
-              <strong>Пока нет завершённых целей</strong>
-              <p className="secondary-text">Начни с первой цели</p>
-            </div>
-          ) : (
-            <>
-              <div className="stats-feature-goal">
-                <span className="stats-feature-icon" aria-hidden="true">
-                  {getGoalEmoji(latestCompletedGoal.category)}
-                </span>
-                <div className="stats-feature-main">
-                  <strong>{latestCompletedGoal.title}</strong>
-                  <p className="secondary-text">
-                    {latestCompletedCount} из {latestCompletedTotal} микрошагов · Завершено{' '}
-                    {formatDashboardDate(latestCompletedGoal.completedAt)}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  className="stats-feature-cta"
-                  onClick={() => openCompletedGoal(latestCompletedGoal.id, 'stats')}
-                >
-                  Открыть журнал
-                </button>
-              </div>
-
-              <button
-                type="button"
-                className="text-button stats-view-link"
-                onClick={() => setScreenMode('archive')}
-              >
-                Смотреть все завершённые цели
-              </button>
-            </>
-          )}
-
-          {typeof onClearHistory === 'function' && hasAnyGoals && (
-            <button type="button" className="text-button stats-reset-button" onClick={onClearHistory}>
-              Сбросить все данные
-            </button>
-          )}
-        </article>
-
-        <article className="card stats-panel">
-          <div className="stats-card-head">
-            <h2 className="stats-card-title">Выводы и инсайты</h2>
-          </div>
-
-          <div className="stats-insights-list">
-            {insights.map((text, index) => (
-              <div key={`${index}-${text.slice(0, 24)}`} className="stats-insight-row">
-                <span className={`stats-insight-icon stats-insight-icon--${index}`} aria-hidden="true">
-                  {INSIGHT_ICONS[index] || '•'}
-                </span>
-                <p>{text}</p>
-              </div>
-            ))}
-          </div>
-        </article>
-      </div>
     </section>
   )
 }
